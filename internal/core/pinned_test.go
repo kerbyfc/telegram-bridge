@@ -141,3 +141,31 @@ func dropMessage(rig *rig, messageID int) {
 
 	rig.api.sent = kept
 }
+
+// TestRenameEditsPinnedLine: переименование темы правит и закреплённую строку. Иначе имя темы и
+// имя в шапке расходятся, а у клиента, который процента контекста не присылает, прежнее имя
+// осталось бы в закреплённой строке навсегда.
+func TestRenameEditsPinnedLine(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	conn, on := rig.mod("s1", topicAlpha)
+
+	req := rig.req(protocol.OpContextReport)
+	req.Percent = shownPercent
+	rig.do(conn, req)
+
+	pinned := pinnedID(t, rig, on.TopicID)
+
+	rename := rig.req(protocol.OpModeOn)
+	rename.Name = topicBeta
+
+	if resp := rig.do(conn, rename); !resp.OK {
+		t.Fatalf("переименование отказало: %+v", resp.Error)
+	}
+
+	want := fmt.Sprintf("%d%% %s", shownPercent, topicBeta)
+	if edit := editOf(t, rig, pinned); edit != want {
+		t.Fatalf("закреплённая строка осталась %q, а тема — %q", edit, topicBeta)
+	}
+}

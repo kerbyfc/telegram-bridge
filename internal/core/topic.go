@@ -237,12 +237,20 @@ func (c *Core) renameBound(ctx context.Context, sess *Session, oldName, name str
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	c.topics.Rename(sess.disk.TopicID, fresh)
+	topicID := sess.disk.TopicID
+	percent := sess.percent
+
+	c.topics.Rename(topicID, fresh)
 	sess.disk.TopicName = fresh
 
 	c.mustSave(c.topics.Save(c.store))
+	c.mu.Unlock()
+
+	// Закреплённая строка носит то же имя, что и тема: без этой правки в шапке осталось бы прежнее,
+	// и владелец читал бы в одной теме два разных имени — а у клиента, который процента контекста
+	// не присылает, прежнее имя осталось бы там навсегда.
+	c.editPinned(ctx, sess, topicID, fresh, percent)
 
 	return nil
 }
