@@ -344,8 +344,29 @@ func (c *Client) message(msg *apiMessage) *Message {
 		Text:      msg.Text,
 		From:      c.author(msg.From),
 		At:        time.Unix(msg.Date, 0),
+		ReplyTo:   replyTo(msg),
 		TopicEdit: topicEdit(msg.ForumTopicEdited),
 	}
+}
+
+// replyTo переводит реплай сообщения; nil — сообщение не реплай. Обычные сообщения темы Telegram
+// метит реплаем на служебное сообщение о её создании, и реплаем это не считается, как и ответ на
+// другое служебное сообщение о теме. Текст исходного сообщения — его текст, нет его — подпись.
+func replyTo(msg *apiMessage) *Reply {
+	if msg.ReplyTo == nil || msg.ReplyTo.isTopicService() {
+		return nil
+	}
+
+	reply := &Reply{Text: msg.ReplyTo.Text, Quote: ""}
+	if reply.Text == "" {
+		reply.Text = msg.ReplyTo.Caption
+	}
+
+	if msg.Quote != nil {
+		reply.Quote = msg.Quote.Text
+	}
+
+	return reply
 }
 
 // author переводит автора сообщения. Автора может не быть вовсе — анонимный админ и сообщение от

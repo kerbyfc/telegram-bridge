@@ -172,6 +172,102 @@ func TestGetUpdatesGivesWordlessMessagesNoText(t *testing.T) {
 	}
 }
 
+// repliesBody — реплаи владельца: на текст, на подпись, на картинку без подписи, с выделенным
+// фрагментом. Последнее — сообщение без реплая.
+var repliesBody = fmt.Sprintf(`{"ok":true,"result":[
+  {"update_id":100,"message":{"message_id":31,"message_thread_id":501,"date":1700000030,
+    "chat":{"id":%[1]d},"from":{"id":%[2]d,"is_bot":false,"first_name":"Александр"},"text":"1",
+    "reply_to_message":{"message_id":30,"message_thread_id":501,"date":1700000029,
+      "chat":{"id":%[1]d},"text":"Вопрос"}}},
+  {"update_id":101,"message":{"message_id":32,"message_thread_id":501,"date":1700000031,
+    "chat":{"id":%[1]d},"from":{"id":%[2]d,"is_bot":false,"first_name":"Александр"},"text":"2",
+    "reply_to_message":{"message_id":30,"message_thread_id":501,"date":1700000029,
+      "chat":{"id":%[1]d},"caption":"Подпись","photo":[{"file_id":"A","file_unique_id":"B","width":9,"height":9}]}}},
+  {"update_id":102,"message":{"message_id":33,"message_thread_id":501,"date":1700000032,
+    "chat":{"id":%[1]d},"from":{"id":%[2]d,"is_bot":false,"first_name":"Александр"},"text":"3",
+    "reply_to_message":{"message_id":30,"message_thread_id":501,"date":1700000029,
+      "chat":{"id":%[1]d},"photo":[{"file_id":"A","file_unique_id":"B","width":9,"height":9}]}}},
+  {"update_id":103,"message":{"message_id":34,"message_thread_id":501,"date":1700000033,
+    "chat":{"id":%[1]d},"from":{"id":%[2]d,"is_bot":false,"first_name":"Александр"},"text":"4",
+    "quote":{"text":"про","position":1},
+    "reply_to_message":{"message_id":30,"message_thread_id":501,"date":1700000029,
+      "chat":{"id":%[1]d},"text":"Вопрос"}}},
+  {"update_id":104,"message":{"message_id":35,"message_thread_id":501,"date":1700000034,
+    "chat":{"id":%[1]d},"from":{"id":%[2]d,"is_bot":false,"first_name":"Александр"},"text":"5"}}
+]}`, groupID, ownerID)
+
+// TestGetUpdatesReadsReplies: реплай доходит до ядра текстом исходного сообщения, подписью, если
+// текста нет, и выделенным фрагментом; реплай на сообщение без текста — реплай с пустым текстом.
+func TestGetUpdatesReadsReplies(t *testing.T) {
+	t.Parallel()
+
+	harness := newRig(t, always(repliesBody))
+
+	updates, err := harness.client(t).GetUpdates(context.Background(), 100, 25*time.Second)
+	if err != nil {
+		t.Fatalf("опрос отказал: %v", err)
+	}
+
+	want := []*botapi.Reply{
+		{Text: "Вопрос", Quote: ""},
+		{Text: "Подпись", Quote: ""},
+		{Text: "", Quote: ""},
+		{Text: "Вопрос", Quote: "про"},
+		nil,
+	}
+
+	if len(updates) != len(want) {
+		t.Fatalf("обновлений %d, а ждали %d", len(updates), len(want))
+	}
+
+	for at, reply := range want {
+		got := updates[at].Message.ReplyTo
+		if (got == nil) != (reply == nil) || (got != nil && *got != *reply) {
+			t.Fatalf("реплай %d: %+v, а ждали %+v", at+1, got, reply)
+		}
+	}
+}
+
+// TestTopicServiceMessageIsNotReply: Telegram метит обычные сообщения темы реплаем на служебное
+// сообщение о создании темы, и реплаем это не считается; так же и остальные служебные сообщения о
+// теме. Подпись у таких сообщений не бывает, текста тоже, и «без текста» сессии было бы ложью.
+func TestTopicServiceMessageIsNotReply(t *testing.T) {
+	t.Parallel()
+
+	services := map[string]string{
+		"forum_topic_created":          `{"name":"тема","icon_color":7322096}`,
+		"forum_topic_edited":           `{"name":"новое имя"}`,
+		"forum_topic_closed":           `{}`,
+		"forum_topic_reopened":         `{}`,
+		"general_forum_topic_hidden":   `{}`,
+		"general_forum_topic_unhidden": `{}`,
+	}
+
+	for service, payload := range services {
+		t.Run(service, func(t *testing.T) {
+			t.Parallel()
+
+			body := fmt.Sprintf(`{"ok":true,"result":[
+			  {"update_id":110,"message":{"message_id":41,"message_thread_id":501,"date":1700000040,
+			    "chat":{"id":%[1]d},"from":{"id":%[2]d,"is_bot":false,"first_name":"Александр"},"text":"слово",
+			    "reply_to_message":{"message_id":501,"message_thread_id":501,"date":1700000000,
+			      "chat":{"id":%[1]d},%[3]q:%[4]s}}}
+			]}`, groupID, ownerID, service, payload)
+
+			harness := newRig(t, always(body))
+
+			updates, err := harness.client(t).GetUpdates(context.Background(), 110, 25*time.Second)
+			if err != nil {
+				t.Fatalf("опрос отказал: %v", err)
+			}
+
+			if len(updates) != 1 || updates[0].Message == nil || updates[0].Message.ReplyTo != nil {
+				t.Fatalf("служебное сообщение о теме принято за реплай: %+v", updates)
+			}
+		})
+	}
+}
+
 // reactionBody — пачка опроса с обновлениями, на которые служба не подписана: подписка
 // `allowed_updates` не касается обновлений, накопленных до вызова с ней, и опрос может нести
 // реакцию владельца на кусок нарезанного вопроса и правку сообщения. Между ними ответ владельца
@@ -193,7 +289,7 @@ var reactionBody = fmt.Sprintf(`{"ok":true,"result":[
 // TestNonMessageUpdatesComeEmpty: реакция и правка сообщения входом не являются — в теме видно
 // только текст, и значки ставит сама служба отметками доставки. Такие обновления доходят до ядра
 // пустыми, но со своим номером: смещение опроса уходит дальше них, а не встаёт навсегда. Ответ
-// реплаем на кусок вопроса — обычное сообщение своей темы: реплай служба не читает.
+// реплаем на кусок вопроса — обычное сообщение своей темы, и реплай назван в нём.
 //
 //nolint:cyclop // одна пачка опроса разбирается целиком: каждое обновление — своя проверка
 func TestNonMessageUpdatesComeEmpty(t *testing.T) {
@@ -223,6 +319,10 @@ func TestNonMessageUpdatesComeEmpty(t *testing.T) {
 
 	if answer.From == nil || answer.From.ID != ownerID || updates[1].FromSelf() {
 		t.Fatalf("автор ответа реплаем: %+v", answer.From)
+	}
+
+	if answer.ReplyTo == nil || answer.ReplyTo.Text != "кусок" {
+		t.Fatalf("реплай на кусок вопроса: %+v", answer.ReplyTo)
 	}
 }
 

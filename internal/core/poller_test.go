@@ -37,6 +37,7 @@ func TestPollSavesOffsetPerUpdate(t *testing.T) {
 				ID: 9100 + num, TopicID: on.TopicID, Text: "слово",
 				From:      &botapi.User{ID: ownerID, Name: "Александр", IsBot: false, IsSelf: false},
 				At:        time.Now(),
+				ReplyTo:   nil,
 				TopicEdit: nil,
 			},
 		}
@@ -209,7 +210,7 @@ func TestSlicedQuestionAnswerComesAsWord(t *testing.T) {
 		Message: &botapi.Message{
 			ID: 9200, TopicID: on.TopicID, Text: "да, делай",
 			From: &botapi.User{ID: ownerID, Name: "Александр", IsBot: false, IsSelf: false},
-			At:   time.Now(), TopicEdit: nil,
+			At:   time.Now(), ReplyTo: nil, TopicEdit: nil,
 		},
 	}
 

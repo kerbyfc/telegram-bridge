@@ -115,13 +115,15 @@ func (c *Core) handleMessage(ctx context.Context, msg *botapi.Message) {
 	}
 
 	// Путь у слова владельца один — доставка соединению сессии. Выбирать между путями службе не
-	// приходится: ожидания хода нет, вопросов как сущности нет, реплай служба не читает.
+	// приходится: ожидания хода нет, вопросов как сущности нет, а реплай только называется в строке
+	// доставки.
 	rec := c.enqueue(sess, recordInput{
 		delivery:  deliveryKindOf(msg.Text),
 		text:      msg.Text,
 		author:    protocol.Author{ID: msg.From.ID, Name: msg.From.Name, Kind: protocol.AuthorHuman},
 		messageID: msg.ID,
 		at:        msg.At,
+		reply:     msg.ReplyTo,
 	})
 	c.mark(ctx, sess, rec.MessageID, rec.TopicID, botapi.MarkReceived)
 	c.announceUnreachable(ctx, sess, rec)

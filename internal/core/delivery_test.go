@@ -466,3 +466,101 @@ func TestHeldWordsKeepOwnerOrderAcrossRestart(t *testing.T) {
 		t.Fatalf("в ящике остались записи после приёма всех слов: %v", files)
 	}
 }
+
+// TestReplyNamedInProvenance: строка доставки называет сообщение, на которое ответил владелец,
+// целиком: без исходного сообщения его «1» сессии ни о чём не говорит. Обычное слово строку не
+// меняет.
+func TestReplyNamedInProvenance(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("я", botapi.MessageLimit)
+
+	cases := []struct {
+		name  string
+		reply *botapi.Reply
+		tail  string
+	}{
+		{"не реплай", nil, ""},
+		{
+			"с текстом",
+			&botapi.Reply{Text: "Вопрос 2: сколько будет 38 + 45?", Quote: ""},
+			", в ответ на сообщение: «Вопрос 2: сколько будет 38 + 45?»",
+		},
+		{"без обрезки", &botapi.Reply{Text: long, Quote: ""}, ", в ответ на сообщение: «" + long + "»"},
+		{
+			"с выделением",
+			&botapi.Reply{Text: "Вопрос 2: сколько будет 38 + 45?", Quote: "38 + 45"},
+			", в ответ на сообщение: «Вопрос 2: сколько будет 38 + 45?» Выделено: «38 + 45»",
+		},
+		{"без текста", &botapi.Reply{Text: "", Quote: ""}, ", в ответ на сообщение без текста"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rig := newRig(t)
+			mod, on := rig.mod("s1", topicAlpha)
+
+			if tc.reply == nil {
+				rig.ownerMessage(on.TopicID, "1")
+			} else {
+				rig.ownerReply(on.TopicID, "1", *tc.reply)
+			}
+
+			got := rig.waitDelivery(mod)
+			if got.Text != "1" {
+				t.Fatalf("текст слова владельца: %q", got.Text)
+			}
+
+			if !provenanceEnds(got.Provenance, ", автор Александр, человек"+tc.tail) {
+				t.Fatalf("строка доставки: %q", got.Provenance)
+			}
+		})
+	}
+}
+
+// TestReplyProvenanceSurvivesRedelivery: повторная подача отдаёт ту же строку доставки, что и
+// первая: и новому соединению после отказа подачи, и после перезапуска службы — из записи на диске.
+func TestReplyProvenanceSurvivesRedelivery(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	first, on := rig.mod("s1", topicAlpha)
+
+	rig.ownerReply(on.TopicID, "1", botapi.Reply{Text: "Вопрос 2", Quote: "2"})
+
+	got := rig.waitDelivery(first)
+	if !provenanceEnds(got.Provenance, ", в ответ на сообщение: «Вопрос 2» Выделено: «2»") {
+		t.Fatalf("первая подача: %q", got.Provenance)
+	}
+
+	rig.ack(first, got.DeliveryID, protocol.AckRejected, "подача промпта отказала")
+
+	second, back := rig.hello("s1", protocol.RoleSession, protocol.KindMod)
+	if !back.OK {
+		t.Fatalf("вернувшийся мод отбит: %+v", back.Error)
+	}
+
+	again := rig.waitDelivery(second)
+	if again.Provenance != got.Provenance {
+		t.Fatalf("после переподключения строка другая: %q, а была %q", again.Provenance, got.Provenance)
+	}
+
+	rig.reopen()
+
+	third, restored := rig.hello("s1", protocol.RoleSession, protocol.KindMod)
+	if !restored.OK {
+		t.Fatalf("сессия не вернулась после перезапуска: %+v", restored.Error)
+	}
+
+	fromDisk := rig.waitDelivery(third)
+	if fromDisk.Provenance != got.Provenance {
+		t.Fatalf("после перезапуска строка другая: %q, а была %q", fromDisk.Provenance, got.Provenance)
+	}
+}
+
+// provenanceEnds сверяет строку доставки: начало со временем и названный конец.
+func provenanceEnds(line, tail string) bool {
+	return strings.HasPrefix(line, "Доставлено из Telegram в ") && strings.HasSuffix(line, tail)
+}

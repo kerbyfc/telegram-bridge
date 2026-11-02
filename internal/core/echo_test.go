@@ -138,7 +138,7 @@ func TestAnonymousWordIsInvisible(t *testing.T) {
 	rig.core.Dispatch(t.Context(), botapi.Update{
 		ID: 3,
 		Message: &botapi.Message{
-			ID: 4321, TopicID: on.TopicID, Text: "от имени группы", From: nil, At: time.Now(), TopicEdit: nil,
+			ID: 4321, TopicID: on.TopicID, Text: "от имени группы", From: nil, At: time.Now(), ReplyTo: nil, TopicEdit: nil,
 		},
 	})
 

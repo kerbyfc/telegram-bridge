@@ -17,6 +17,7 @@ type recordInput struct {
 	author    protocol.Author
 	messageID int
 	at        time.Time
+	reply     *botapi.Reply
 }
 
 // enqueue кладёт слово владельца в ящик и будит того, кто его ждёт. Запись держится в ящике,
@@ -33,7 +34,7 @@ func (c *Core) enqueue(sess *Session, in recordInput) *store.Record {
 		ID:         store.NewID("d", seq),
 		Text:       in.text,
 		Author:     in.author,
-		Provenance: provenance(in.author, in.at),
+		Provenance: provenance(in.author, in.at, in.reply),
 		MessageID:  in.messageID,
 		TopicID:    sess.disk.TopicID,
 		TopicName:  sess.disk.TopicName,
@@ -91,12 +92,28 @@ func (c *Core) hold(ctx context.Context, sess *Session, records ...*store.Record
 }
 
 // provenance собирает готовую строку провенанса, которую мод приклеивает к подаче: кто написал,
-// человек или бот, и когда.
-func provenance(author protocol.Author, at time.Time) string {
+// человек или бот, когда и на какое сообщение ответил. Запись ящика хранит строку готовой, поэтому
+// повторная подача отдаёт её же.
+func provenance(author protocol.Author, at time.Time, reply *botapi.Reply) string {
 	who := "человек"
 	if author.Kind == protocol.AuthorBot {
 		who = "бот"
 	}
 
-	return fmt.Sprintf("Доставлено из Telegram в %s, автор %s, %s", at.Format("15:04"), author.Name, who)
+	line := fmt.Sprintf("Доставлено из Telegram в %s, автор %s, %s", at.Format("15:04"), author.Name, who)
+	if reply == nil {
+		return line
+	}
+
+	if reply.Text == "" {
+		line += ", в ответ на сообщение без текста"
+	} else {
+		line += ", в ответ на сообщение: «" + reply.Text + "»"
+	}
+
+	if reply.Quote != "" {
+		line += " Выделено: «" + reply.Quote + "»"
+	}
+
+	return line
 }

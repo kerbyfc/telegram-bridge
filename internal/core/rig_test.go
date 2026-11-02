@@ -141,11 +141,29 @@ func (r *rig) ownerMessage(topicID int64, text string) int {
 			Text:      text,
 			From:      &botapi.User{ID: ownerID, Name: "Александр", IsBot: false, IsSelf: false},
 			At:        time.Now(),
+			ReplyTo:   nil,
 			TopicEdit: nil,
 		},
 	})
 
 	return id
+}
+
+// ownerReply подаёт в ядро реплай владельца в тему.
+func (r *rig) ownerReply(topicID int64, text string, reply botapi.Reply) {
+	r.t.Helper()
+	r.core.Dispatch(context.Background(), botapi.Update{
+		ID: 3,
+		Message: &botapi.Message{
+			ID:        r.nextOwnerMessageID(),
+			TopicID:   topicID,
+			Text:      text,
+			From:      &botapi.User{ID: ownerID, Name: "Александр", IsBot: false, IsSelf: false},
+			At:        time.Now(),
+			ReplyTo:   &reply,
+			TopicEdit: nil,
+		},
+	})
 }
 
 // strangerMessage подаёт сообщение не от владельца.
@@ -159,6 +177,7 @@ func (r *rig) strangerMessage(topicID int64, text string) {
 			Text:      text,
 			From:      &botapi.User{ID: 42, Name: "Прохожий", IsBot: false, IsSelf: false},
 			At:        time.Now(),
+			ReplyTo:   nil,
 			TopicEdit: nil,
 		},
 	})
@@ -175,6 +194,7 @@ func (r *rig) selfMessage(topicID int64, text string) {
 			Text:      text,
 			From:      &botapi.User{ID: 777, Name: "мост", IsBot: true, IsSelf: true},
 			At:        time.Now(),
+			ReplyTo:   nil,
 			TopicEdit: nil,
 		},
 	})
@@ -197,6 +217,7 @@ func (r *rig) topicEdited(topicID int64, edit botapi.TopicEdit) {
 			Text:      "",
 			From:      &botapi.User{ID: ownerID, Name: "Александр", IsBot: false, IsSelf: false},
 			At:        time.Now(),
+			ReplyTo:   nil,
 			TopicEdit: &edit,
 		},
 	})

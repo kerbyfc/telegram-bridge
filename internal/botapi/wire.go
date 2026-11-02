@@ -143,9 +143,32 @@ type apiMessage struct {
 	From      *apiUser `json:"from"`
 	Date      int64    `json:"date"`
 	Text      string   `json:"text"`
+	Caption   string   `json:"caption"`
+	// ReplyTo — сообщение, на которое ответили. Вложенного реплая у него Telegram не присылает.
+	ReplyTo *apiMessage `json:"reply_to_message"`
+	// Quote — фрагмент исходного сообщения, выделенный при ответе.
+	Quote *apiQuote `json:"quote"`
 	// ForumTopicEdited — служебное сообщение о правке темы (`ForumTopicEdited`): тему поправили, и
 	// текста у такого сообщения нет.
 	ForumTopicEdited *apiTopicEdited `json:"forum_topic_edited"`
+	// Остальные служебные сообщения о теме. Содержимое службе не нужно: важно, что это они.
+	ForumTopicCreated  *struct{} `json:"forum_topic_created"`
+	ForumTopicClosed   *struct{} `json:"forum_topic_closed"`
+	ForumTopicReopened *struct{} `json:"forum_topic_reopened"`
+	GeneralTopicHidden *struct{} `json:"general_forum_topic_hidden"`
+	GeneralTopicShown  *struct{} `json:"general_forum_topic_unhidden"`
+}
+
+// isTopicService отвечает, служебное ли это сообщение о теме.
+func (m *apiMessage) isTopicService() bool {
+	return m.ForumTopicCreated != nil || m.ForumTopicEdited != nil ||
+		m.ForumTopicClosed != nil || m.ForumTopicReopened != nil ||
+		m.GeneralTopicHidden != nil || m.GeneralTopicShown != nil
+}
+
+// apiQuote — выделенный при ответе фрагмент (`TextQuote`).
+type apiQuote struct {
+	Text string `json:"text"`
 }
 
 // apiTopicEdited — правка темы. Поля необязательные: поля значка нет — эта правка значка не

@@ -55,7 +55,8 @@ travel only through its connection.
   completion.
 - **Input is your text only.** A message not from `owner_id`, from a bot, without an author, a sticker,
   a photo, a service message never reach a session and are not named in the topic; the trace is a log
-  line. Replies and reactions are not read.
+  line. Reactions are not read. A reply reaches the session as an ordinary message, and its delivery
+  line names the original message in full, along with the quoted fragment, if any.
 - **No turn is held waiting.** A turn with a question ends, the session stands, and your answer wakes
   it. In away mode a question with options arrives in the topic as a message with numbered options:
   reply with an ordinary message, and the answer comes back to the session. A question without
