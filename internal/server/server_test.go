@@ -32,6 +32,12 @@ func (stubAPI) CreateTopic(_ context.Context, _ string) (int64, error) { return 
 // RenameTopic не зовётся в тестах транспорта.
 func (stubAPI) RenameTopic(_ context.Context, _ int64, _ string) error { return nil }
 
+// CloseTopic не зовётся в тестах транспорта.
+func (stubAPI) CloseTopic(_ context.Context, _ int64) error { return nil }
+
+// ReopenTopic не зовётся в тестах транспорта.
+func (stubAPI) ReopenTopic(_ context.Context, _ int64) error { return nil }
+
 // SetTopicInMode не зовётся в тестах транспорта.
 func (stubAPI) SetTopicInMode(_ context.Context, _ int64, _ bool) error { return nil }
 

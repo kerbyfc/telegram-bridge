@@ -67,6 +67,8 @@ func (stubAPI) SendMessage(_ context.Context, _ int64, _ string) (int, error) { 
 func (stubAPI) EditMessageText(_ context.Context, _ int, _ string) error      { return nil }
 func (stubAPI) CreateTopic(_ context.Context, _ string) (int64, error)        { return 42, nil }
 func (stubAPI) RenameTopic(_ context.Context, _ int64, _ string) error        { return nil }
+func (stubAPI) CloseTopic(_ context.Context, _ int64) error                   { return nil }
+func (stubAPI) ReopenTopic(_ context.Context, _ int64) error                  { return nil }
 func (stubAPI) SetTopicInMode(_ context.Context, _ int64, _ bool) error       { return nil }
 func (stubAPI) SetReaction(_ context.Context, _ int, _ botapi.Mark) error     { return nil }
 func (stubAPI) PinMessage(_ context.Context, _ int64, _ int) error            { return nil }

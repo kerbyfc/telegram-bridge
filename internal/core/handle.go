@@ -43,7 +43,7 @@ func (c *Core) answer(ctx context.Context, conn *Conn, req protocol.Request) pro
 			return protocol.Fail(req.RID, protocol.CodeBadRequest, "`hello` второй раз на том же соединении")
 		}
 
-		return c.hello(conn, req)
+		return c.hello(ctx, conn, req)
 	}
 
 	if !greeted {
@@ -91,7 +91,7 @@ func (c *Core) dispatch(ctx context.Context, conn *Conn, req protocol.Request) p
 	case protocol.OpNameReport:
 		return c.nameReport(ctx, conn, req)
 	case protocol.OpBye:
-		return c.bye(conn, req)
+		return c.bye(ctx, conn, req)
 	case protocol.OpHello:
 		panic("`hello` до разбора операций: его перехватывает Handle")
 	}
@@ -120,9 +120,7 @@ func (c *Core) modeStatus(conn *Conn, req protocol.Request) protocol.Response {
 	return resp
 }
 
-// bye — средство сессии кончило сессию: служба хоронит её сама и без владельца. Сети похороны
-// не касаются — режим остаётся, значок темы не меняется, — поэтому ctx операции тут не нужен, как
-// и в `mode.status`.
+// bye — средство сессии кончило сессию: служба хоронит её сама и без владельца.
 //
 // Хоронит сессию то же соединение, что её держит. Вытесненное прежнее — мод перезагрузился, и
 // погашенная подкоманда говорит `bye` уже после `hello` новой — иначе похоронило бы сессию
@@ -130,7 +128,7 @@ func (c *Core) modeStatus(conn *Conn, req protocol.Request) protocol.Response {
 // клиента. Дальше вытесненное соединение о сессии ничего не решает, как и в прочих кадрах.
 // Похороненной сессии повторный `bye` отвечает `ok`: похороны идемпотентны, а мод и его подкоманда
 // на выходе могут сказать `bye` оба.
-func (c *Core) bye(conn *Conn, req protocol.Request) protocol.Response {
+func (c *Core) bye(ctx context.Context, conn *Conn, req protocol.Request) protocol.Response {
 	c.mu.Lock()
 	sess := c.session(sessionOf(conn, req))
 
@@ -146,7 +144,7 @@ func (c *Core) bye(conn *Conn, req protocol.Request) protocol.Response {
 		return protocol.Ok(req.RID)
 	}
 
-	c.bury(sess, "сессия кончилась")
+	c.bury(ctx, sess, "сессия кончилась")
 
 	return protocol.Ok(req.RID)
 }

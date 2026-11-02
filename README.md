@@ -28,8 +28,9 @@ travel only through its connection.
 | OpenCode session | `/away [topic name]` | `/here` |
 | the session's topic in Telegram | `/away [topic name]` | `/here` |
 
-- **The mode lives in the service**, on the session record: a short call and the death of a session do
-  not turn it off; only your word does. The service reads the topic all the time, so `/away` from the
+- **The mode lives in the service**, on the session record: a short call does not turn it off. A
+  session that ended holds no mode, and gets it back when it returns; only your word takes it away for
+  good. The service reads the topic all the time, so `/away` from the
   topic works even when no session is in the mode; it applies to one session — the session of that
   topic.
 - **Topic.** The name is the argument, otherwise the chat's own name as the session adapter reports
@@ -39,9 +40,13 @@ travel only through its connection.
   the topic, is yours: chat renames never change it. A chat without a name falls back to the bound
   topic and `default_topic_name`. Longer than 128 characters is cut with an ellipsis, the suffix stays
   at the end. A topic and a session are one to one: a name taken by a live session gives the second
-  session the lowest free suffix `#2`, `#3` — two chats with the same name get `X` and `X#2`; a free
-  topic of the same name goes back to its former session. A deleted topic is created again on the
-  first "topic not found" error.
+  session the lowest free suffix `#2`, `#3` — two chats with the same name get `X` and `X#2`. A deleted
+  topic is created again on the first "topic not found" error.
+- **A session that ended** has its topic closed and renamed to `[кончилась] <name>`, and the name is
+  free again: a new session with that name gets it without a suffix, in a new topic. If the session
+  returns (`claude --resume`), the topic is reopened and gets its name back, or the lowest free suffix
+  if the name is taken. A word written to the closed topic is held, with the same 😴 and the same reply
+  as for any session outside the mode. A refusal from Telegram goes to the log and changes nothing else.
 - **Only finished replies reach the topic**, each as one message; a long one is split at Telegram's
   limit, in order. Tool output, tool input and thinking never reach the topic; an interrupted reply
   is not sent. While a turn runs, the topic shows "typing".

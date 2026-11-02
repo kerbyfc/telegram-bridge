@@ -15,6 +15,8 @@ const (
 	methodSendMessage = "SendMessage"
 	methodCreateTopic = "CreateTopic"
 	methodRenameTopic = "RenameTopic"
+	methodCloseTopic  = "CloseTopic"
+	methodReopenTopic = "ReopenTopic"
 	methodSetReaction = "SetReaction"
 	methodGetUpdates  = "GetUpdates"
 )
@@ -39,6 +41,7 @@ type fakeAPI struct {
 	renamed   []string
 	names     map[int64]string
 	inMode    map[int64]bool
+	closed    map[int64]bool
 	pinned    map[int64]int
 	edits     map[int]string
 	reactions map[int]botapi.Mark
@@ -175,6 +178,55 @@ func (f *fakeAPI) RenameTopic(_ context.Context, topicID int64, name string) err
 	f.names[topicID] = name
 
 	return nil
+}
+
+// CloseTopic закрывает тему. Закрытая тема отвечает успехом: клиент Bot API считает «уже так»
+// успехом, и подделка держит порт, а не платформу.
+func (f *fakeAPI) CloseTopic(_ context.Context, topicID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	err := f.planned(methodCloseTopic)
+	if err != nil {
+		return err
+	}
+
+	err = f.refuse(topicID)
+	if err != nil {
+		return err
+	}
+
+	f.closed[topicID] = true
+
+	return nil
+}
+
+// ReopenTopic открывает закрытую тему снова.
+func (f *fakeAPI) ReopenTopic(_ context.Context, topicID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	err := f.planned(methodReopenTopic)
+	if err != nil {
+		return err
+	}
+
+	err = f.refuse(topicID)
+	if err != nil {
+		return err
+	}
+
+	f.closed[topicID] = false
+
+	return nil
+}
+
+// closedOf отвечает, закрыта ли тема на платформе.
+func (f *fakeAPI) closedOf(topicID int64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.closed[topicID]
 }
 
 // SetTopicInMode переключает значок темы. Значок, который уже стоит, платформа отбивает отказом
@@ -439,6 +491,7 @@ func newFakeAPI() *fakeAPI {
 		renamed:   nil,
 		names:     map[int64]string{},
 		inMode:    map[int64]bool{},
+		closed:    map[int64]bool{},
 		pinned:    map[int64]int{},
 		edits:     map[int]string{},
 		reactions: map[int]botapi.Mark{},

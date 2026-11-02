@@ -54,6 +54,9 @@ func (c *Core) enableMode(ctx context.Context, sess *Session, requested string) 
 	c.topicMu.Lock()
 	defer c.topicMu.Unlock()
 
+	// Режим в закрытой теме не живёт: команда `/away` у кончившейся сессии сперва возвращает тему.
+	c.restoreTopic(ctx, sess)
+
 	c.mu.Lock()
 
 	// Имя режется по пределу платформы здесь, на входе в реестр: реестр держит ровно то имя, что
@@ -85,6 +88,7 @@ func (c *Core) enableMode(ctx context.Context, sess *Session, requested string) 
 	c.mu.Lock()
 
 	sess.disk.Mode = true
+	sess.disk.ModeOnReturn = false
 	sess.disk.NameManual = manual
 	topicID := sess.disk.TopicID
 	topicName := sess.disk.TopicName
@@ -136,7 +140,8 @@ func (c *Core) followName(ctx context.Context, sess *Session, name string) error
 
 	sess.disk.AutoName = name
 	manual := sess.disk.NameManual
-	bound := sess.disk.TopicID != 0
+	// Закрытую тему название чата не правит: оно запомнено, и с ним сессия вернётся.
+	bound := sess.disk.TopicID != 0 && !c.topics.IsClosed(sess.disk.TopicID)
 	oldName := sess.disk.TopicName
 
 	c.mustSave(sess.disk.Save(c.store))
@@ -189,6 +194,7 @@ func (c *Core) disableMode(ctx context.Context, sess *Session) int64 {
 	c.mu.Lock()
 
 	sess.disk.Mode = false
+	sess.disk.ModeOnReturn = false
 	topicID := sess.disk.TopicID
 	topicName := sess.disk.TopicName
 	// Со снятым режимом слово из ящика сессии не адресовано вовсе: что бы с ним ни было до
@@ -261,12 +267,72 @@ func (c *Core) freeName(name string, own int64) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	return c.leastFreeName(name, own)
+}
+
+// leastFreeName — подбор свободного имени; звать под `mu`.
+func (c *Core) leastFreeName(name string, own int64) string {
 	for num := 1; ; num++ {
 		candidate := suffixed(name, num)
 		if c.topics.FreeName(candidate, own) {
 			return candidate
 		}
 	}
+}
+
+// restoreTopic открывает закрытую тему сессии и возвращает ей имя; занято — наименьший свободный
+// суффикс. Темы, которую служба не закрывала, не касается. Отказ платформы ложится в журнал и
+// возврата не отменяет. Звать под `topicMu`.
+func (c *Core) restoreTopic(ctx context.Context, sess *Session) {
+	c.mu.Lock()
+
+	topicID := sess.disk.TopicID
+
+	if !c.topics.IsClosed(topicID) {
+		c.mu.Unlock()
+
+		return
+	}
+
+	entry, _ := c.topics.ByIDLookup(topicID)
+	name := entry.Name
+	if !c.topics.FreeName(name, topicID) {
+		base, _ := splitTopicNumber(name)
+		name = c.leastFreeName(base, topicID)
+	}
+
+	c.topics.Reopen(topicID, name)
+	sess.disk.TopicName = name
+	c.mustSave(c.topics.Save(c.store))
+	c.mustSave(sess.disk.Save(c.store))
+	c.mu.Unlock()
+
+	err := c.api.ReopenTopic(ctx, topicID)
+	if botapi.IsNoTopic(err) {
+		_, err = c.recreateTopic(ctx, sess, topicID, name)
+		if err != nil {
+			c.journalTopicRefusal(sess, "topic-reopen-failed", topicID, err)
+		}
+
+		return
+	}
+
+	if err != nil {
+		c.journalTopicRefusal(sess, "topic-reopen-failed", topicID, err)
+	}
+
+	err = c.api.RenameTopic(ctx, topicID, name)
+	if err != nil {
+		c.journalTopicRefusal(sess, "topic-rename-failed", topicID, err)
+	}
+}
+
+// journalTopicRefusal оставляет отказ платформы по теме в журнале.
+func (c *Core) journalTopicRefusal(sess *Session, event string, topicID int64, err error) {
+	c.journal(store.Entry{
+		At: time.Now(), Event: event, Session: sess.disk.ID, Outcome: "",
+		Code: string(botapi.Code(err)), Text: err.Error(), TopicID: topicID,
+	})
 }
 
 // bindTopic привязывает сессию к теме: прежняя свободная тема того же имени возвращается
@@ -345,6 +411,7 @@ func (c *Core) releaseTopic(topicID int64) {
 	sess.disk.TopicID = 0
 	sess.disk.TopicName = ""
 	sess.disk.Mode = false
+	sess.disk.ModeOnReturn = false
 	// Ручное имя жило в имени темы: темы у сессии больше нет, и имени, которое надо было бы
 	// помнить, тоже. Название чата — факт о сессии, а не о теме, и остаётся.
 	sess.disk.NameManual = false
@@ -404,6 +471,9 @@ func (c *Core) recreateTopic(ctx context.Context, sess *Session, oldID int64, na
 		Code: string(protocol.CodeNoTopic), Text: name, TopicID: oldID,
 	})
 
+	// Закрытая тема имени не держит: пока её не было в реестре имён, его могла занять другая.
+	name = c.freeName(name, oldID)
+
 	fresh, err := c.api.CreateTopic(ctx, name)
 	if err != nil {
 		return 0, errTopic(err)
@@ -413,6 +483,7 @@ func (c *Core) recreateTopic(ctx context.Context, sess *Session, oldID int64, na
 	c.topics.Drop(oldID)
 	c.topics.Put(store.Topic{ID: fresh, Name: name, InMode: false, PinnedID: 0, IconUnknown: false})
 	sess.disk.TopicID = fresh
+	sess.disk.TopicName = name
 	inMode := sess.disk.Mode
 
 	c.mustSave(c.topics.Save(c.store))

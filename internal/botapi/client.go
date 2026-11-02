@@ -191,6 +191,27 @@ func (c *Client) RenameTopic(ctx context.Context, topicID int64, name string) er
 	return c.call(ctx, "editForumTopic", params, nil)
 }
 
+// CloseTopic закрывает тему. Тема, которая уже закрыта, — успех «уже так»: отказ
+// `TOPIC_NOT_MODIFIED` значит, что служба просила ровно то состояние, в котором тема и так стоит.
+func (c *Client) CloseTopic(ctx context.Context, topicID int64) error {
+	return c.switchTopic(ctx, "closeForumTopic", topicID)
+}
+
+// ReopenTopic открывает закрытую тему снова. Тема, которая уже открыта, — успех «уже так».
+func (c *Client) ReopenTopic(ctx context.Context, topicID int64) error {
+	return c.switchTopic(ctx, "reopenForumTopic", topicID)
+}
+
+// switchTopic зовёт метод, переключающий тему между закрытой и открытой.
+func (c *Client) switchTopic(ctx context.Context, method string, topicID int64) error {
+	err := c.call(ctx, method, topicRefParams{ChatID: c.groupID, ThreadID: topicID}, nil)
+	if errors.Is(err, errNotModified) {
+		return nil
+	}
+
+	return err
+}
+
 // SetTopicInMode переключает значок темы. Снятие — пустое значение значка: им Telegram возвращает
 // теме её значок по умолчанию.
 //

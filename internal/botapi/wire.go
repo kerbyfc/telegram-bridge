@@ -57,6 +57,12 @@ type topicNameParams struct {
 	Name   string `json:"name"`
 }
 
+// topicRefParams — вызов, которому нужна только тема: закрытие и открытие.
+type topicRefParams struct {
+	ChatID   int64 `json:"chat_id"`
+	ThreadID int64 `json:"message_thread_id"`
+}
+
 // topicRenameParams — переименование темы. Значок при этом не трогается: поля значка в кадре нет,
 // и Telegram оставляет прежний.
 type topicRenameParams struct {

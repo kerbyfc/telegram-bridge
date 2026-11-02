@@ -95,14 +95,15 @@ func TestModeOnSameNameDoesNotRename(t *testing.T) {
 	}
 }
 
-// TestModeOnReturnsToFreeTopic: сессия без привязки на свободное название возвращается в прежнюю
-// тему, а одноимённой второй в чате не появляется.
+// TestModeOnReturnsToFreeTopic: сессия без привязки на название, чья тема открыта и свободна,
+// возвращается в прежнюю тему, а одноимённой второй в чате не появляется. Такая тема — у сессии,
+// погребённой прежней службой: новое погребение тему закрывает и имя освобождает.
 func TestModeOnReturnsToFreeTopic(t *testing.T) {
 	t.Parallel()
 
 	rig := newRig(t)
-	conn, first := rig.mod("s1", topicAlpha)
-	rig.do(conn, rig.req(protocol.OpBye))
+	_, first := rig.mod("s1", topicAlpha)
+	rig.legacyBury("s1")
 
 	_, second := rig.mod("s2", topicAlpha)
 
@@ -116,7 +117,7 @@ func TestModeOnReturnsToFreeTopic(t *testing.T) {
 }
 
 // TestModeOnTakesLeastFreeSuffix: занятое живой привязкой имя получает наименьший свободный
-// номерной суффикс, а освободившийся номер переиспользуется.
+// номерной суффикс, а номер, освобождённый погребением, переиспользуется новой темой.
 func TestModeOnTakesLeastFreeSuffix(t *testing.T) {
 	t.Parallel()
 
@@ -136,7 +137,7 @@ func TestModeOnTakesLeastFreeSuffix(t *testing.T) {
 	rig.do(second, rig.req(protocol.OpBye))
 
 	_, fourthOn := rig.mod("s4", topicAlpha)
-	if fourthOn.TopicID != secondOn.TopicID || fourthOn.Created {
+	if fourthOn.TopicName != "alpha#2" || fourthOn.TopicID == secondOn.TopicID || !fourthOn.Created {
 		t.Fatalf("освободившийся номер не переиспользован: %+v", fourthOn)
 	}
 }

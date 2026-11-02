@@ -81,7 +81,7 @@ func (c *Core) CloseConn(ctx context.Context, conn *Conn) {
 
 // hello — первый кадр соединения: версия, роль, вид звонящего, сессия. Он же забирает соединение
 // сессии себе.
-func (c *Core) hello(conn *Conn, req protocol.Request) protocol.Response {
+func (c *Core) hello(ctx context.Context, conn *Conn, req protocol.Request) protocol.Response {
 	kind := protocol.Kind(req.Kind)
 
 	err := validateHello(req, kind)
@@ -114,9 +114,26 @@ func (c *Core) hello(conn *Conn, req protocol.Request) protocol.Response {
 
 	if resp.Revived {
 		c.logRevival(sess)
+		c.returnTopic(context.WithoutCancel(ctx), sess, &resp)
 	}
 
 	return resp
+}
+
+// returnTopic возвращает вернувшейся сессии её закрытую тему и называет итог в ответе на `hello`:
+// суффикс и заново заведённая тема известны только после этого. Вклад в статусную строку снят
+// погребением и возвращается здесь же.
+func (c *Core) returnTopic(ctx context.Context, sess *Session, resp *protocol.Response) {
+	c.topicMu.Lock()
+	c.restoreTopic(ctx, sess)
+	c.topicMu.Unlock()
+
+	c.mu.Lock()
+	resp.TopicID = sess.disk.TopicID
+	resp.TopicName = sess.disk.TopicName
+	c.mu.Unlock()
+
+	c.contribute(sess)
 }
 
 // greet отмечает соединение представившимся: с этого момента ему доступны операции его роли.
@@ -157,12 +174,17 @@ func (c *Core) takeOver(sess *Session, conn *Conn) []*deliveryWaiter {
 }
 
 // greeting собирает ответ на `hello` и снимает отметку похорон: вернувшаяся сессия получает и
-// свою тему, и режим таким, каким он был. Режим снимает только слово владельца, поэтому здесь не
-// снимается ничего — средство сессии узнаёт о самом возврате полем `revived`.
+// свою тему, и режим таким, каким он был. Насовсем режим снимает только слово владельца, поэтому
+// здесь не снимается ничего — средство сессии узнаёт о самом возврате полем `revived`.
 func (c *Core) greeting(sess *Session, req protocol.Request) protocol.Response {
 	revived := sess.disk.Buried
 	if revived {
 		sess.disk.Buried = false
+	}
+
+	if sess.disk.ModeOnReturn {
+		sess.disk.Mode = true
+		sess.disk.ModeOnReturn = false
 	}
 
 	resp := protocol.Ok(req.RID)

@@ -22,6 +22,10 @@ type API interface {
 	CreateTopic(ctx context.Context, name string) (int64, error)
 	// RenameTopic переименовывает тему; тем же именем Telegram отвечает отказом.
 	RenameTopic(ctx context.Context, topicID int64, name string) error
+	// CloseTopic закрывает тему. Закрытая уже — успех «уже так».
+	CloseTopic(ctx context.Context, topicID int64) error
+	// ReopenTopic открывает закрытую тему снова. Открытая уже — успех «уже так».
+	ReopenTopic(ctx context.Context, topicID int64) error
 	// SetTopicInMode переключает значок темы: грубое состояние «сессия этой темы в режиме».
 	// Каким значком это показано, решает клиент Bot API, а не ядро.
 	SetTopicInMode(ctx context.Context, topicID int64, inMode bool) error

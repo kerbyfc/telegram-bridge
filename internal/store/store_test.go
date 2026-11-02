@@ -256,6 +256,68 @@ func TestFreeNameSeesOwnRecord(t *testing.T) {
 	}
 }
 
+// TestClosedTopicFreesNameAndKeepsRecord: закрытая тема имени не держит — новая запись того же имени
+// не падает, — а по id находится по-прежнему и правится на месте. Запись переживает файл состояния и
+// возвращается в реестр имён под названным именем.
+func TestClosedTopicFreesNameAndKeepsRecord(t *testing.T) {
+	t.Parallel()
+
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("состояние не открыто: %v", err)
+	}
+
+	topics := &store.Topics{ByName: map[string]store.Topic{}, ByID: map[string]string{}, Closed: nil}
+	topics.Put(store.Topic{ID: 1, Name: "alpha", InMode: true, PinnedID: 5, IconUnknown: false})
+	topics.Close(1)
+
+	if !topics.IsClosed(1) || !topics.FreeName("alpha", 2) {
+		t.Fatal("закрытая тема держит имя")
+	}
+
+	topics.Put(store.Topic{ID: 2, Name: "alpha", InMode: false, PinnedID: 0, IconUnknown: false})
+
+	entry, ok := topics.ByIDLookup(1)
+	if !ok || entry.Name != "alpha" || entry.PinnedID != 5 {
+		t.Fatalf("закрытая тема по id: %+v", entry)
+	}
+
+	entry.PinnedID = 6
+	topics.Put(entry)
+
+	if held, _ := topics.ByNameLookup("alpha"); held.ID != 2 {
+		t.Fatalf("правка закрытой записи задела реестр имён: %+v", held)
+	}
+
+	err = topics.Save(st)
+	if err != nil {
+		t.Fatalf("реестр не записан: %v", err)
+	}
+
+	loaded, err := store.LoadTopics(st)
+	if err != nil {
+		t.Fatalf("реестр не прочитан: %v", err)
+	}
+
+	loaded.Reopen(1, "alpha#2")
+
+	if loaded.IsClosed(1) {
+		t.Fatal("открытая снова тема числится закрытой")
+	}
+
+	held, ok := loaded.ByNameLookup("alpha#2")
+	if !ok || held.ID != 1 || held.PinnedID != 6 {
+		t.Fatalf("открытая снова тема: %+v", held)
+	}
+
+	loaded.Close(1)
+	loaded.Drop(1)
+
+	if _, ok = loaded.ByIDLookup(1); ok {
+		t.Fatal("удалённая закрытая тема осталась в реестре")
+	}
+}
+
 // TestWriteAtomicFailureLeavesTargetAndNoTemp: сорвавшаяся замена файла состояния прежнего
 // содержимого не трогает и временного файла после себя не оставляет: половинчатой записи, которую
 // следующий старт прочёл бы как состояние, не бывает. Замена срывается на последнем шаге — цель

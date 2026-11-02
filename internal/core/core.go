@@ -97,7 +97,7 @@ func (c *Core) Reap(ctx context.Context) {
 	c.mu.Unlock()
 
 	for _, sess := range dead {
-		c.bury(sess, "сессия ушла")
+		c.bury(ctx, sess, "сессия ушла")
 	}
 }
 

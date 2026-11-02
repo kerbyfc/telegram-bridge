@@ -38,8 +38,8 @@ func TestLivenessIsConnectionNotPID(t *testing.T) {
 	time.Sleep(2 * rig.cfg.ReconnectGrace)
 	rig.reap()
 
-	// Сессия похоронена — это видно её возврату, — но режим похороны не снимают: он свойство
-	// темы и её сессии, и снимает его только слово владельца.
+	// Сессия похоронена — это видно её возврату, — и режим она получает обратно: насовсем его
+	// снимает только слово владельца.
 	_, back := rig.hello("s1", protocol.RoleSession, protocol.KindMod)
 	if !back.Revived {
 		t.Fatalf("сессия не похоронена после отсрочки: %+v", back)
@@ -56,7 +56,7 @@ func TestLivenessIsConnectionNotPID(t *testing.T) {
 	}
 
 	if !rig.api.inModeOf(on.TopicID) {
-		t.Fatal("значок темы снят похоронами, хотя режим остался")
+		t.Fatal("значок темы снят похоронами")
 	}
 }
 
@@ -111,8 +111,7 @@ func TestRestartBuriesOnlyAfterGrace(t *testing.T) {
 	}
 }
 
-// TestRevivedSessionKeepsMode: похороненная сессия возвращается с режимом — смерть его не
-// снимает. В тему о возврате служба не пишет и в сессию ничего не подаёт: о самом возврате
+// TestRevivedSessionKeepsMode: похороненная сессия возвращается с режимом, какой был. В тему о возврате служба не пишет и в сессию ничего не подаёт: о самом возврате
 // средство сессии узнаёт полем `revived` в ответе на своё же `hello`.
 func TestRevivedSessionKeepsMode(t *testing.T) {
 	t.Parallel()
@@ -312,7 +311,7 @@ func TestShortCallSwitchesModeButHoldsNoLiveness(t *testing.T) {
 	}
 
 	// Тонкий клиент закрылся, мод ушёл — живость кончилась вместе с его соединением, и служба
-	// сессию похоронила. Режим при этом остался: его снимает только слово владельца.
+	// сессию похоронила. Похороненная режим не держит: он ждёт её возврата.
 	rig.closeConn(tool)
 	rig.closeConn(mod)
 	time.Sleep(2 * rig.cfg.ReconnectGrace)
@@ -330,8 +329,12 @@ func TestShortCallSwitchesModeButHoldsNoLiveness(t *testing.T) {
 		t.Fatal("сессия осталась живой без соединения мода")
 	}
 
-	if got := rig.do(tool, status); got.Mode != protocol.ModeOn {
-		t.Fatalf("похороны сняли режим: %+v", got)
+	if got := rig.do(tool, status); got.Mode != protocol.ModeOff {
+		t.Fatalf("похороненная сессия держит режим: %+v", got)
+	}
+
+	if _, back := rig.hello("s1", protocol.RoleSession, protocol.KindMod); back.Mode != protocol.ModeOn {
+		t.Fatalf("похороны сняли режим насовсем: %+v", back)
 	}
 }
 

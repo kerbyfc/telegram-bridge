@@ -289,6 +289,67 @@ func TestRenameTopicTouchesNameOnly(t *testing.T) {
 	}
 }
 
+// TestCloseAndReopenTopicCallOwnMethods: закрытие и открытие — свои методы платформы с id темы.
+func TestCloseAndReopenTopicCallOwnMethods(t *testing.T) {
+	t.Parallel()
+
+	harness := newRig(t, always(okTrue))
+	client := harness.client(t)
+
+	err := client.CloseTopic(context.Background(), 501)
+	if err != nil {
+		t.Fatalf("тема не закрыта: %v", err)
+	}
+
+	err = client.ReopenTopic(context.Background(), 501)
+	if err != nil {
+		t.Fatalf("тема не открыта: %v", err)
+	}
+
+	calls := harness.recorded()
+	if len(calls) != 2 || calls[0].method != "closeForumTopic" || calls[1].method != "reopenForumTopic" {
+		t.Fatalf("вызовы подставы: %v", calls)
+	}
+
+	for _, one := range calls {
+		if number(t, one.body, "message_thread_id") != 501 {
+			t.Fatalf("тема в кадре: %v", one.body)
+		}
+	}
+}
+
+// TestCloseAndReopenAlreadyDoneIsSuccess: тема уже в просимом состоянии — успех «уже так». Отказ по
+// праву остаётся отказом, а удалённая тема называется своим кодом.
+func TestCloseAndReopenAlreadyDoneIsSuccess(t *testing.T) {
+	t.Parallel()
+
+	done := newRig(t, iconRefused("Bad Request: TOPIC_NOT_MODIFIED")).client(t)
+
+	err := done.CloseTopic(context.Background(), 501)
+	if err != nil {
+		t.Fatalf("закрытие «уже так» названо отказом: %v", err)
+	}
+
+	err = done.ReopenTopic(context.Background(), 501)
+	if err != nil {
+		t.Fatalf("открытие «уже так» названо отказом: %v", err)
+	}
+
+	refused := newRig(t, iconRefused("Bad Request: not enough rights to manage topics")).client(t)
+
+	err = refused.CloseTopic(context.Background(), 501)
+	if err == nil || botapi.Code(err) != protocol.CodeTelegramRefused {
+		t.Fatalf("отказ закрытия проглочен: %v", err)
+	}
+
+	gone := newRig(t, iconRefused("Bad Request: message thread not found")).client(t)
+
+	err = gone.ReopenTopic(context.Background(), 501)
+	if !botapi.IsNoTopic(err) {
+		t.Fatalf("удалённая тема не опознана: %v", err)
+	}
+}
+
 // TestTopicIconResolvedOnceAndClearedByEmpty: значок «в режиме» разрешается в id эмодзи однажды —
 // набор платформы в жизни службы не меняется, — а снятие значка это пустое значение поля.
 func TestTopicIconResolvedOnceAndClearedByEmpty(t *testing.T) {

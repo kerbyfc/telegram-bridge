@@ -28,9 +28,14 @@ type Topic struct {
 
 // Topics — реестр тем прямым словарём в обе стороны: имя ищется словарём, а не обратным
 // перебором по id, иначе после переименования два имени смотрят на один id.
+//
+// Closed — закрытые темы кончившихся сессий по id. Имени они не держат: уникальности имён Telegram
+// не требует, и у двух кончившихся сессий одного названия видимое имя одно. Name такой записи — имя
+// до закрытия: его тема просит при возврате сессии.
 type Topics struct {
 	ByName map[string]Topic  `json:"by_name"`
 	ByID   map[string]string `json:"by_id"`
+	Closed map[string]Topic  `json:"closed,omitempty"`
 }
 
 // ByNameLookup отдаёт запись по имени темы.
@@ -44,19 +49,68 @@ func (t *Topics) ByNameLookup(name string) (Topic, bool) {
 func (t *Topics) ByIDLookup(id int64) (Topic, bool) {
 	name, ok := t.ByID[topicKey(id)]
 	if !ok {
+		closed, isClosed := t.Closed[topicKey(id)]
+		if isClosed {
+			return closed, true
+		}
+
 		return zeroTopic(), false
 	}
 
 	return t.ByName[name], true
 }
 
-// Put кладёт запись в оба словаря. Имя, занятое другой темой, затереть нельзя: затёртая запись
+// IsClosed отвечает, закрыта ли тема службой.
+func (t *Topics) IsClosed(id int64) bool {
+	_, closed := t.Closed[topicKey(id)]
+
+	return closed
+}
+
+// Close переносит запись открытой темы в закрытые: её имя с этого момента свободно.
+func (t *Topics) Close(id int64) {
+	topic, ok := t.ByIDLookup(id)
+	if !ok || t.IsClosed(id) {
+		panic("реестр тем: закрывается тема, которой нет среди открытых")
+	}
+
+	delete(t.ByName, topic.Name)
+	delete(t.ByID, topicKey(id))
+
+	if t.Closed == nil {
+		t.Closed = map[string]Topic{}
+	}
+
+	t.Closed[topicKey(id)] = topic
+}
+
+// Reopen возвращает закрытую тему в реестр имён под названным именем. Имя обязано быть свободным —
+// занятость проверяет звонящий (`FreeName`), как и у `Rename`.
+func (t *Topics) Reopen(id int64, name string) {
+	topic, ok := t.Closed[topicKey(id)]
+	if !ok {
+		panic("реестр тем: открывается тема, которой нет среди закрытых")
+	}
+
+	delete(t.Closed, topicKey(id))
+	topic.Name = name
+	t.Put(topic)
+}
+
+// Put кладёт запись в оба словаря, а запись закрытой темы правит на месте: имени она не держит.
+// Имя, занятое другой темой, затереть нельзя: затёртая запись
 // исчезла бы из реестра при живой теме, а её id продолжал бы смотреть на то же имя — и реестр
 // начал бы отдавать одну тему вместо другой. Восстановить такую запись неоткуда: списка тем
 // Telegram не отдаёт, поэтому это паника, а не тихая порча.
 func (t *Topics) Put(topic Topic) {
 	if topic.Name == "" || topic.ID == 0 {
 		panic("реестр тем: запись без имени или без id")
+	}
+
+	if t.IsClosed(topic.ID) {
+		t.Closed[topicKey(topic.ID)] = topic
+
+		return
 	}
 
 	held, ok := t.ByName[topic.Name]
@@ -73,8 +127,8 @@ func (t *Topics) Put(topic Topic) {
 // занятость проверяет звонящий (`FreeName`), потому что выбор свободного имени его решение.
 func (t *Topics) Rename(id int64, name string) {
 	topic, ok := t.ByIDLookup(id)
-	if !ok {
-		panic("реестр тем: переименование темы, которой в реестре нет")
+	if !ok || t.IsClosed(id) {
+		panic("реестр тем: переименование темы, которой нет среди открытых")
 	}
 
 	delete(t.ByName, topic.Name)
@@ -92,6 +146,12 @@ func (t *Topics) FreeName(name string, id int64) bool {
 
 // Drop убирает запись по id: тема пропала в Telegram.
 func (t *Topics) Drop(id int64) {
+	if t.IsClosed(id) {
+		delete(t.Closed, topicKey(id))
+
+		return
+	}
+
 	topic, ok := t.ByIDLookup(id)
 	if !ok {
 		return
