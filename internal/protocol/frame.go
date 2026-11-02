@@ -26,6 +26,7 @@ const (
 	OpSay           Op = "say"
 	OpAgentMessage  Op = "agent.message"
 	OpContextReport Op = "context.report"
+	OpNameReport    Op = "name.report"
 	OpBye           Op = "bye"
 )
 

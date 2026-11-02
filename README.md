@@ -32,11 +32,16 @@ travel only through its connection.
   not turn it off; only your word does. The service reads the topic all the time, so `/away` from the
   topic works even when no session is in the mode; it applies to one session — the session of that
   topic.
-- **Topic.** The name is the argument, otherwise the topic already bound to the session, otherwise
-  `default_topic_name` from the settings. Longer than 128 characters is cut with an ellipsis, the
-  suffix stays at the end. A topic and a session are one to one: a name taken by a live session gives
-  the second session the lowest free suffix `#2`, `#3`; a free topic of the same name goes back to
-  its former session. A deleted topic is created again on the first "topic not found" error.
+- **Topic.** The name is the argument, otherwise the chat's own name as the session adapter reports
+  it, otherwise the topic already bound to the session, otherwise `default_topic_name` from the
+  settings. The chat's name is followed: a renamed chat renames its bound topic — while the mode is on
+  and after `/here` too — by the same rules as any other name. A name you type, in the terminal or in
+  the topic, is yours: chat renames never change it. A chat without a name falls back to the bound
+  topic and `default_topic_name`. Longer than 128 characters is cut with an ellipsis, the suffix stays
+  at the end. A topic and a session are one to one: a name taken by a live session gives the second
+  session the lowest free suffix `#2`, `#3` — two chats with the same name get `X` and `X#2`; a free
+  topic of the same name goes back to its former session. A deleted topic is created again on the
+  first "topic not found" error.
 - **Only finished replies reach the topic**, each as one message; a long one is split at Telegram's
   limit, in order. Tool output, tool input and thinking never reach the topic; an interrupted reply
   is not sent. While a turn runs, the topic shows "typing".
@@ -364,15 +369,16 @@ behaviour and command execution are the service's business. OpenCode has one thi
 is your requirement — the line at the bottom of the window, `TG: <topic name>`; its state comes from
 the `away status` call, not from reading the bridge's state.
 
-**Turn boundaries, replies and the context percentage are named by the session adapter.** Both clients
-call the same local entry of the subcommand: `POST /turn/start {turn?}` and `POST /turn/end {turn?}` —
-turn boundaries with a turn name, by which the service keeps the "typing" chat action in the topic,
-`POST /message {text}` — a finished agent reply that the service sends to the topic as one message, and
-`POST /context {percent}` — the share of the context window in use, which the service puts into the
-topic's pinned line. Neither the subcommand nor the service keeps its own context count: the number is
-taken from the client by whoever lives inside the client. The Claude Code mod takes it ready-made and
-names it on every turn boundary; the OpenCode plugin has no ready number yet, so no percentage comes
-from there and such a session's pinned line carries the topic name alone.
+**Turn boundaries, replies, the context percentage and the chat's name are named by the session
+adapter.** Both clients call the same local entry of the subcommand: `POST /turn/start {turn?}` and
+`POST /turn/end {turn?}` — turn boundaries with a turn name, by which the service keeps the "typing"
+chat action in the topic, `POST /message {text}` — a finished agent reply that the service sends to the
+topic as one message, `POST /context {percent}` — the share of the context window in use, which the
+service puts into the topic's pinned line, and `POST /name {name}` — the chat's name, which becomes the
+topic's name when you did not give one yourself. Neither the subcommand nor the service keeps its own
+context count: the number is taken from the client by whoever lives inside the client. The Claude Code
+mod takes it ready-made and names it on every turn boundary; the OpenCode plugin has no ready number
+yet, so no percentage comes from there and such a session's pinned line carries the topic name alone.
 
 ## The reply stream: only a finished reply reaches the topic
 

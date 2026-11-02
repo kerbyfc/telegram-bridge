@@ -20,6 +20,12 @@ type Session struct {
 	TopicID   int64  `json:"topic_id"`
 	TopicName string `json:"topic_name"`
 	Buried    bool   `json:"buried"`
+	// NameManual — имя темы задано владельцем вручную: аргументом `/away`. Такое имя старше
+	// имени, которое называет средство сессии, и переименования чата его не меняют.
+	NameManual bool `json:"name_manual,omitempty"`
+	// AutoName — имя, названное средством сессии: название чата. Оно действует, пока имя не задано
+	// вручную, и переименовывает привязанную тему, когда меняется.
+	AutoName string `json:"auto_name,omitempty"`
 }
 
 // Save пишет привязку сессии атомарной заменой.

@@ -26,6 +26,9 @@ const (
 	PathContext = "/context"
 	// PathMessage — дописанная реплика агента: служба отправляет её в тему одним сообщением.
 	PathMessage = "/message"
+	// PathName — имя, которое средство сессии называет службе: название чата. Служба не знает,
+	// что это чат, и держит у себя только признак «имя задано вручную».
+	PathName = "/name"
 )
 
 // front — местный вход подкоманды: HTTP поверх своего адреса — сокета на macOS и именованного
@@ -57,6 +60,8 @@ func (f front) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		f.report(writer, request)
 	case PathMessage:
 		f.stream(writer, request)
+	case PathName:
+		f.name(writer, request)
 	default:
 		f.refuse(writer, http.StatusNotFound, protocol.CodeUnknownOp,
 			"местного входа `"+request.URL.Path+"` нет")
@@ -135,6 +140,29 @@ func (f front) report(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	resp, err := f.link.report(request.Context(), report)
+	if err != nil {
+		f.refuse(writer, statusOf(err), protocol.CodeBadRequest, err.Error())
+
+		return
+	}
+
+	f.answer(writer, resp)
+}
+
+// name проводит в службу имя, названное средством сессии: название чата. Пустое имя — у чата
+// названия нет; это тоже сведение, а не отказ.
+func (f front) name(writer http.ResponseWriter, request *http.Request) {
+	var name Name
+
+	err := json.NewDecoder(request.Body).Decode(&name)
+	if err != nil {
+		f.refuse(writer, http.StatusBadRequest, protocol.CodeBadRequest,
+			"имя чата не разобрано: "+err.Error())
+
+		return
+	}
+
+	resp, err := f.link.name(request.Context(), name)
 	if err != nil {
 		f.refuse(writer, statusOf(err), protocol.CodeBadRequest, err.Error())
 

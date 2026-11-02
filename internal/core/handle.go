@@ -88,6 +88,8 @@ func (c *Core) dispatch(ctx context.Context, conn *Conn, req protocol.Request) p
 		return c.agentMessage(ctx, conn, req)
 	case protocol.OpContextReport:
 		return c.contextReport(ctx, conn, req)
+	case protocol.OpNameReport:
+		return c.nameReport(ctx, conn, req)
 	case protocol.OpBye:
 		return c.bye(conn, req)
 	case protocol.OpHello:
@@ -180,9 +182,10 @@ func (c *Core) sessionInMode(conn *Conn, req protocol.Request) (*Session, *proto
 }
 
 // allowed держит границу роли, и только роли: вид звонящего здесь не участвует — мод Claude Code
-// и плагин OpenCode равны. Поток сообщений агента и границы хода ведёт соединение сессии;
-// короткому вызову доступны режим, «сказать владельцу» и вопрос с вариантами — своего вывода под
-// видом реплики агента в тему не сольёт никто.
+// и плагин OpenCode равны. Поток сообщений агента, границы хода и имя чата ведёт соединение
+// сессии; короткому вызову доступны режим, «сказать владельцу» и вопрос с вариантами — своего
+// вывода под видом реплики агента в тему не сольёт никто, и чужое имя чата короткий вызов тоже не
+// назовёт.
 func allowed(role protocol.Role, op protocol.Op) bool {
 	if role == protocol.RoleSession {
 		return true
@@ -193,7 +196,8 @@ func allowed(role protocol.Role, op protocol.Op) bool {
 		protocol.OpSay, protocol.OpQuestionAsk:
 		return true
 	case protocol.OpHello, protocol.OpTurnStart, protocol.OpTurnEnd, protocol.OpDeliveryWait,
-		protocol.OpDeliveryAck, protocol.OpAgentMessage, protocol.OpContextReport, protocol.OpBye:
+		protocol.OpDeliveryAck, protocol.OpAgentMessage, protocol.OpContextReport,
+		protocol.OpNameReport, protocol.OpBye:
 		return false
 	}
 
