@@ -1,0 +1,56 @@
+{
+  "session_id": "43714282-96eb-4fac-8edd-e27241087ba9",
+  "transcript_path": "/Users/owner/.claude/projects/-private-tmp-hookcap-work/43714282-96eb-4fac-8edd-e27241087ba9.jsonl",
+  "cwd": "/private/tmp/hookcap/work",
+  "prompt_id": "aa315789-1b20-4a56-838d-ce2440370416",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Каким способом собрать итоговый отчёт?",
+        "header": "Способ",
+        "multiSelect": false,
+        "options": [
+          {
+            "label": "Подробный (Рекомендую)",
+            "description": "Разобрать каждый пункт по отдельности и назвать причину по каждому."
+          },
+          {
+            "label": "Короткий",
+            "description": "Свести всё к одному абзацу и назвать только итог."
+          },
+          {
+            "label": "Пока не решено",
+            "description": "Оставить выбор открытым и вернуться к нему позже."
+          }
+        ]
+      },
+      {
+        "question": "Какие разделы включить в отчёт?",
+        "header": "Разделы",
+        "multiSelect": true,
+        "options": [
+          {
+            "label": "Вступление",
+            "description": "Назвать, о чём отчёт и для кого он написан."
+          },
+          {
+            "label": "Выводы",
+            "description": "Перечислить итоги и то, что из них следует."
+          },
+          {
+            "label": "Приложения",
+            "description": "Приложить таблицы и другие материалы, на которые ссылается текст."
+          },
+          {
+            "label": "Ничего из этого",
+            "description": "Оставить только основной текст."
+          }
+        ]
+      }
+    ]
+  },
+  "tool_use_id": "toolu_01PMcAt31T6e3EGUXJyVLBxK"
+}

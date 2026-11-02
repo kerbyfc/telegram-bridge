@@ -1,0 +1,51 @@
+{
+  "input": {
+    "questions": [
+      {
+        "header": "Цвет пробы",
+        "question": "Какой цвет у пробы?",
+        "options": [
+          { "label": "красный", "description": "Первый вариант" },
+          { "label": "синий", "description": "Второй вариант" }
+        ]
+      },
+      {
+        "header": "Ветки",
+        "question": "Какие ветки влить?",
+        "multiple": true,
+        "options": [
+          { "label": "feature-a", "description": "ветка правки" },
+          { "label": "main", "description": "основная" }
+        ]
+      }
+    ]
+  },
+  "payload": {
+    "session_id": "ses_e6df51764ffeIZICKsptc4ji7C",
+    "tool_input": {
+      "questions": [
+        {
+          "header": "Цвет пробы",
+          "question": "Какой цвет у пробы?",
+          "options": [
+            { "label": "красный", "description": "Первый вариант" },
+            { "label": "синий", "description": "Второй вариант" }
+          ]
+        },
+        {
+          "header": "Ветки",
+          "question": "Какие ветки влить?",
+          "options": [
+            { "label": "feature-a", "description": "ветка правки" },
+            { "label": "main", "description": "основная" }
+          ],
+          "multiSelect": true
+        }
+      ]
+    }
+  },
+  "topic": [
+    "Цвет пробы: Какой цвет у пробы?\n1) красный — Первый вариант\n2) синий — Второй вариант",
+    "Ветки: Какие ветки влить? (можно несколько)\n1) feature-a — ветка правки\n2) main — основная"
+  ]
+}

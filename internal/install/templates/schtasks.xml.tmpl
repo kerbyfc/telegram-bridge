@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{{ xml .Task }}: служба моста Telegram [{{ xml .Fingerprint }}]</Description>
+    <URI>\{{ xml .Task }}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <!-- Запуск при входе владельца: служба живёт в его сессии, потому что канал и состояние
+         принадлежат ему же. -->
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{{ xml .UserID }}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{ xml .UserID }}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <!-- Окно задачи не мешает рабочему столу; консоль самого процесса снимает `serve --service`. -->
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <!-- Перезапуск при падении: планировщик считает задачу сорванной, если её процесс вышел
+         ненулевым кодом, и поднимает его заново. -->
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{{ xml .Binary }}</Command>
+      <Arguments>{{ xml .Arguments }}</Arguments>
+    </Exec>
+  </Actions>
+</Task>

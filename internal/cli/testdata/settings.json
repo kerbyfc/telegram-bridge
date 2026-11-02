@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "telegram-bridge hook ask",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
