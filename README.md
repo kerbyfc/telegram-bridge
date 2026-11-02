@@ -144,9 +144,13 @@ retry_pauses: ["5s", "15s", "1m", "5m"]  # pauses between polls after a failure
 ```bash
 go install github.com/kerbyfc/telegram-bridge/cmd/telegram-bridge@latest
 
-telegram-bridge install --config ~/.dm-telegram-go/config.yaml      # binary, autostart, start
+"$(go env GOPATH)/bin/telegram-bridge" install --config ~/.dm-telegram-go/config.yaml      # binary, autostart, start
 telegram-bridge uninstall --config ~/.dm-telegram-go/config.yaml    # autostart and binary
 ```
+
+Run `install` from the freshly built binary: `telegram-bridge` on `PATH` may be the earlier copy in
+`~/.local/bin`, which compares itself with itself, reports `same` and leaves the service running the
+old build.
 
 `install` copies the binary to `~/.local/bin/telegram-bridge` and writes the autostart entry
 `~/Library/LaunchAgents/com.kerbyfc.telegram-bridge.plist`: launchd keeps it starting at login and
