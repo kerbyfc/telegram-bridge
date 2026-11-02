@@ -24,7 +24,7 @@ travel only through its connection.
 
 | Where | Turn on | Turn off |
 |---|---|---|
-| Claude Code session | `/telegram-bridge:away [topic name]` | `/telegram-bridge:here` |
+| Claude Code session | `/away [topic name]` | `/here` |
 | OpenCode session | `/away [topic name]` | `/here` |
 | the session's topic in Telegram | `/away [topic name]` | `/here` |
 
