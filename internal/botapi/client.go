@@ -52,11 +52,6 @@ const updatesLimit = 100
 // срока, и рвать вызов ровно на нём значило бы не дождаться ответа никогда.
 const pollMargin = 10 * time.Second
 
-// iconInMode — значок темы, которым видно «сессия этой темы в режиме». Какой это значок — вид
-// темы, он решается этапом вида; клиент даёт операцию и держит выбор одним значением, чтобы
-// операцию было чем исполнить.
-const iconInMode = "🤖"
-
 // Значки отметок доставки — выбор владельца; ядро знает только состояния, значки знает клиент.
 // Каждый значок назван здесь ровно один раз: замена — правка одной строки (и её ожидания в
 // тесте `TestMarksCarryOwnerEmoji`). Перечень Telegram закрытый, и не всякий значок в нём есть:
@@ -87,6 +82,10 @@ type Options struct {
 	SendGap time.Duration
 	// BaseURL — адрес Bot API; пусто — `BaseURL`.
 	BaseURL string
+	// TopicIconOn — значок темы в режиме: эмодзи из закрытого набора значков тем.
+	TopicIconOn string
+	// TopicIconOff — значок темы вне режима: эмодзи из того же набора.
+	TopicIconOff string
 }
 
 // Client — настоящий клиент Bot API: тот, что ходит в Telegram.
@@ -100,8 +99,12 @@ type Client struct {
 	retryPauses []time.Duration
 	sendGap     time.Duration
 
-	mu   sync.Mutex
-	icon string
+	iconOn  string
+	iconOff string
+
+	mu sync.Mutex
+	// icons — закрытый набор значков тем: id эмодзи по эмодзи. Пусто — ещё не спрашивался.
+	icons map[string]string
 
 	sendMu   sync.Mutex
 	lastSend time.Time
@@ -212,32 +215,49 @@ func (c *Client) switchTopic(ctx context.Context, method string, topicID int64) 
 	return err
 }
 
-// SetTopicInMode переключает значок темы. Снятие — пустое значение значка: им Telegram возвращает
-// теме её значок по умолчанию.
+// SetTopicInMode ставит теме значок режима: значок вкл либо значок выкл. Значка нет в наборе — отказ
+// с названной причиной, а не другой значок молча.
 //
 // Значок, который уже стоит, — успех «уже так», а не отказ: правку, ничего не изменившую, платформа
 // отбивает отказом `TOPIC_NOT_MODIFIED`, а служба просила ровно то состояние, в котором тема и так
 // стоит. Так бывает, когда значок сменили руками и запись реестра о нём устарела.
 func (c *Client) SetTopicInMode(ctx context.Context, topicID int64, inMode bool) error {
-	icon := ""
-
+	emoji := c.iconOff
 	if inMode {
-		resolved, err := c.modeIcon(ctx)
-		if err != nil {
-			return err
-		}
+		emoji = c.iconOn
+	}
 
-		icon = resolved
+	set, err := c.iconSet(ctx)
+	if err != nil {
+		return err
+	}
+
+	icon, known := set[emoji]
+	if !known {
+		return Refuse(protocol.CodeTelegramRefused, "в наборе значков тем Telegram нет "+emoji)
 	}
 
 	params := topicIconParams{ChatID: c.groupID, ThreadID: topicID, Icon: icon}
 
-	err := c.call(ctx, "editForumTopic", params, nil)
+	err = c.call(ctx, "editForumTopic", params, nil)
 	if errors.Is(err, errNotModified) {
 		return nil
 	}
 
 	return err
+}
+
+// TopicIconKnown отвечает, есть ли эмодзи в закрытом наборе значков тем. Отказ здесь значит, что
+// набор не получен, а не что значка в нём нет: звонящий обязан различать эти случаи.
+func (c *Client) TopicIconKnown(ctx context.Context, emoji string) (bool, error) {
+	set, err := c.iconSet(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	_, known := set[emoji]
+
+	return known, nil
 }
 
 // SetReaction ставит сообщению владельца отметку доставки. Список реакции всегда из одного
@@ -315,15 +335,14 @@ func (c *Client) sendTurn(ctx context.Context) error {
 	return nil
 }
 
-// modeIcon разрешает значок «в режиме» в id пользовательского эмодзи: набор значков тем закрытый,
-// и другого способа взять id у Bot API нет. Разрешается однажды — набор платформы в жизни службы
-// не меняется. Значка нет в наборе — отказ с названной причиной, а не другой значок молча.
-func (c *Client) modeIcon(ctx context.Context) (string, error) {
+// iconSet отдаёт закрытый набор значков тем: id эмодзи другим способом у Bot API не взять.
+// Спрашивается однажды — набор платформы в жизни службы не меняется.
+func (c *Client) iconSet(ctx context.Context) (map[string]string, error) {
 	c.mu.Lock()
-	known := c.icon
+	known := c.icons
 	c.mu.Unlock()
 
-	if known != "" {
+	if known != nil {
 		return known, nil
 	}
 
@@ -331,22 +350,19 @@ func (c *Client) modeIcon(ctx context.Context) (string, error) {
 
 	err := c.call(ctx, "getForumTopicIconStickers", emptyParams{}, &stickers)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
+	set := make(map[string]string, len(stickers))
 	for _, sticker := range stickers {
-		if sticker.Emoji != iconInMode {
-			continue
-		}
-
-		c.mu.Lock()
-		c.icon = sticker.CustomEmojiID
-		c.mu.Unlock()
-
-		return sticker.CustomEmojiID, nil
+		set[sticker.Emoji] = sticker.CustomEmojiID
 	}
 
-	return "", Refuse(protocol.CodeTelegramRefused, "в наборе значков тем Telegram нет "+iconInMode)
+	c.mu.Lock()
+	c.icons = set
+	c.mu.Unlock()
+
+	return set, nil
 }
 
 // message переводит сообщение Bot API в сообщение порта.
@@ -417,6 +433,10 @@ func NewClient(opts Options) (*Client, error) {
 		return nil, fmt.Errorf("%w: нет id группы", ErrOptions)
 	}
 
+	if opts.TopicIconOn == "" || opts.TopicIconOff == "" {
+		return nil, fmt.Errorf("%w: нет значка темы", ErrOptions)
+	}
+
 	selfID, err := botID(opts.Token)
 	if err != nil {
 		return nil, err
@@ -440,8 +460,10 @@ func NewClient(opts Options) (*Client, error) {
 		selfID:      selfID,
 		retryPauses: opts.RetryPauses,
 		sendGap:     opts.SendGap,
+		iconOn:      opts.TopicIconOn,
+		iconOff:     opts.TopicIconOff,
 		mu:          sync.Mutex{},
-		icon:        "",
+		icons:       nil,
 		sendMu:      sync.Mutex{},
 		lastSend:    time.Time{},
 	}, nil

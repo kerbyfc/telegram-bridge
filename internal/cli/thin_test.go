@@ -207,6 +207,11 @@ func TestDoctorNamesDeadService(t *testing.T) {
 		t.Fatalf("годные настройки названы негодными: %+v", answer.Checks)
 	}
 
+	// Telegram со стенда недоступен: значки не подтверждены, но и не негодны.
+	if icons := named(answer, "значки тем"); icons.State != "unknown" {
+		t.Fatalf("недоступность Telegram названа иначе: %+v", icons)
+	}
+
 	dead := named(answer, "служба")
 	if dead.State != checkFailed {
 		t.Fatalf("мёртвая служба названа живой: %+v", dead)
@@ -486,6 +491,9 @@ func settingsFor(t *testing.T, root, stateRoot, socket string) string {
 		"statusline_root: " + filepath.Join(root, "statusline"),
 		"socket_path: " + socket,
 		"poll_timeout: 50ms",
+		// Прокси в закрытый порт: сверка значков самопроверки в настоящий Telegram со стенда не ходит.
+		"proxy: http://127.0.0.1:1",
+		"retry_pauses: [\"1ms\"]",
 		"",
 	}, "\n")
 

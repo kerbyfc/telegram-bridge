@@ -20,6 +20,9 @@ const (
 	selfID    = int64(4242)
 	groupID   = int64(-1001234567890)
 	ownerID   = int64(777)
+
+	testIconOn  = "🤖"
+	testIconOff = "💻"
 )
 
 // Ответы Bot API, которые подстава отдаёт чаще прочих.
@@ -28,7 +31,7 @@ const (
 	okTrue     = `{"ok":true,"result":true}`
 	okTopic    = `{"ok":true,"result":{"message_thread_id":501}}`
 	okStickers = `{"ok":true,"result":[{"emoji":"📈","custom_emoji_id":"aa"},` +
-		`{"emoji":"🤖","custom_emoji_id":"bb"}]}`
+		`{"emoji":"🤖","custom_emoji_id":"bb"},{"emoji":"💻","custom_emoji_id":"cc"}]}`
 )
 
 // reply — ответ подставы на один вызов: кадр со своим статусом или обрыв соединения вместо
@@ -110,12 +113,14 @@ func (r *rig) clientWith(t *testing.T, gap time.Duration) *botapi.Client {
 	t.Helper()
 
 	client, err := botapi.NewClient(botapi.Options{
-		Token:       testToken,
-		GroupID:     groupID,
-		Proxy:       "",
-		RetryPauses: []time.Duration{time.Millisecond, time.Millisecond},
-		SendGap:     gap,
-		BaseURL:     r.srv.URL,
+		Token:        testToken,
+		GroupID:      groupID,
+		Proxy:        "",
+		RetryPauses:  []time.Duration{time.Millisecond, time.Millisecond},
+		SendGap:      gap,
+		BaseURL:      r.srv.URL,
+		TopicIconOn:  testIconOn,
+		TopicIconOff: testIconOff,
 	})
 	if err != nil {
 		t.Fatalf("клиент не собрался: %v", err)

@@ -26,8 +26,8 @@ type API interface {
 	CloseTopic(ctx context.Context, topicID int64) error
 	// ReopenTopic открывает закрытую тему снова. Открытая уже — успех «уже так».
 	ReopenTopic(ctx context.Context, topicID int64) error
-	// SetTopicInMode переключает значок темы: грубое состояние «сессия этой темы в режиме».
-	// Каким значком это показано, решает клиент Bot API, а не ядро.
+	// SetTopicInMode ставит теме значок вкл или выкл: грубое состояние «сессия этой темы в режиме».
+	// Какие это значки, знает клиент Bot API, а не ядро.
 	SetTopicInMode(ctx context.Context, topicID int64, inMode bool) error
 	// SetReaction ставит сообщению владельца отметку доставки. Реакция у бота одна на сообщение,
 	// поэтому новая отметка вытесняет прежнюю — отметки сменяют друг друга, а не копятся; какой

@@ -280,9 +280,10 @@ func (c *Core) leastFreeName(name string, own int64) string {
 	}
 }
 
-// restoreTopic открывает закрытую тему сессии и возвращает ей имя; занято — наименьший свободный
-// суффикс. Темы, которую служба не закрывала, не касается. Отказ платформы ложится в журнал и
-// возврата не отменяет. Звать под `topicMu`.
+// restoreTopic открывает закрытую тему сессии и ставит значок по режиму. Имя при закрытии не
+// менялось и правится, только если занято: тогда наименьший свободный суффикс. Темы, которую служба
+// не закрывала, не касается. Отказ платформы ложится в журнал и возврата не отменяет. Звать под
+// `topicMu`.
 func (c *Core) restoreTopic(ctx context.Context, sess *Session) {
 	c.mu.Lock()
 
@@ -300,6 +301,9 @@ func (c *Core) restoreTopic(ctx context.Context, sess *Session) {
 		base, _ := splitTopicNumber(name)
 		name = c.leastFreeName(base, topicID)
 	}
+
+	renamed := name != entry.Name
+	inMode := sess.disk.Mode
 
 	c.topics.Reopen(topicID, name)
 	sess.disk.TopicName = name
@@ -321,10 +325,14 @@ func (c *Core) restoreTopic(ctx context.Context, sess *Session) {
 		c.journalTopicRefusal(sess, "topic-reopen-failed", topicID, err)
 	}
 
-	err = c.api.RenameTopic(ctx, topicID, name)
-	if err != nil {
-		c.journalTopicRefusal(sess, "topic-rename-failed", topicID, err)
+	if renamed {
+		err = c.api.RenameTopic(ctx, topicID, name)
+		if err != nil {
+			c.journalTopicRefusal(sess, "topic-rename-failed", topicID, err)
+		}
 	}
+
+	c.setTopicMode(ctx, sess, inMode)
 }
 
 // journalTopicRefusal оставляет отказ платформы по теме в журнале.
@@ -481,7 +489,8 @@ func (c *Core) recreateTopic(ctx context.Context, sess *Session, oldID int64, na
 
 	c.mu.Lock()
 	c.topics.Drop(oldID)
-	c.topics.Put(store.Topic{ID: fresh, Name: name, InMode: false, PinnedID: 0, IconUnknown: false})
+	// У новой темы значок платформы по умолчанию, ни вкл, ни выкл: пока он не поставлен, он неизвестен.
+	c.topics.Put(store.Topic{ID: fresh, Name: name, InMode: false, PinnedID: 0, IconUnknown: true})
 	sess.disk.TopicID = fresh
 	sess.disk.TopicName = name
 	inMode := sess.disk.Mode
@@ -490,18 +499,12 @@ func (c *Core) recreateTopic(ctx context.Context, sess *Session, oldID int64, na
 	c.mustSave(sess.disk.Save(c.store))
 	c.mu.Unlock()
 
-	if inMode {
-		err = c.api.SetTopicInMode(ctx, fresh, true)
-		if err != nil {
-			return 0, errTopic(err)
-		}
-
-		c.mu.Lock()
-		c.topics.Put(store.Topic{ID: fresh, Name: name, InMode: true, PinnedID: 0, IconUnknown: false})
-		c.mustSave(c.topics.Save(c.store))
-		c.mu.Unlock()
+	err = c.api.SetTopicInMode(ctx, fresh, inMode)
+	if err != nil {
+		return 0, errTopic(err)
 	}
 
+	c.noteIcon(fresh, inMode)
 	c.createPinned(ctx, sess, fresh, name)
 
 	return fresh, nil
@@ -538,10 +541,15 @@ func (c *Core) setTopicMode(ctx context.Context, sess *Session, inMode bool) {
 		return
 	}
 
+	c.noteIcon(sess.disk.TopicID, inMode)
+}
+
+// noteIcon записывает в реестр значок, поставленный на платформе; темы вне реестра не трогает.
+func (c *Core) noteIcon(topicID int64, inMode bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	entry, known = c.topics.ByIDLookup(sess.disk.TopicID)
+	entry, known := c.topics.ByIDLookup(topicID)
 	if !known {
 		return
 	}

@@ -350,9 +350,9 @@ func TestCloseAndReopenAlreadyDoneIsSuccess(t *testing.T) {
 	}
 }
 
-// TestTopicIconResolvedOnceAndClearedByEmpty: значок «в режиме» разрешается в id эмодзи однажды —
-// набор платформы в жизни службы не меняется, — а снятие значка это пустое значение поля.
-func TestTopicIconResolvedOnceAndClearedByEmpty(t *testing.T) {
+// TestTopicIconsResolvedOnce: значки вкл и выкл разрешаются в id эмодзи одним вызовом набора — он в
+// жизни службы не меняется. Пустого значения в кадре нет: снятия значка у службы не бывает.
+func TestTopicIconsResolvedOnce(t *testing.T) {
 	t.Parallel()
 
 	harness := newRig(t, byMethod(map[string]string{
@@ -361,16 +361,11 @@ func TestTopicIconResolvedOnceAndClearedByEmpty(t *testing.T) {
 	}))
 	client := harness.client(t)
 
-	for range 2 {
-		err := client.SetTopicInMode(context.Background(), 501, true)
+	for _, inMode := range []bool{true, true, false} {
+		err := client.SetTopicInMode(context.Background(), 501, inMode)
 		if err != nil {
 			t.Fatalf("значок не поставлен: %v", err)
 		}
-	}
-
-	err := client.SetTopicInMode(context.Background(), 501, false)
-	if err != nil {
-		t.Fatalf("значок не снят: %v", err)
 	}
 
 	calls := harness.recorded()
@@ -385,11 +380,68 @@ func TestTopicIconResolvedOnceAndClearedByEmpty(t *testing.T) {
 	}
 
 	if text(t, calls[1].body, "icon_custom_emoji_id") != "bb" {
-		t.Fatalf("значок в кадре: %v", calls[1].body)
+		t.Fatalf("значок вкл в кадре: %v", calls[1].body)
 	}
 
-	if text(t, calls[3].body, "icon_custom_emoji_id") != "" {
-		t.Fatalf("снятие значка в кадре: %v", calls[3].body)
+	if text(t, calls[3].body, "icon_custom_emoji_id") != "cc" {
+		t.Fatalf("значок выкл в кадре: %v", calls[3].body)
+	}
+}
+
+// TestTopicIconsComeFromOptions: какие значки ставить, называют настройки, а не клиент.
+func TestTopicIconsComeFromOptions(t *testing.T) {
+	t.Parallel()
+
+	harness := newRig(t, byMethod(map[string]string{
+		"getForumTopicIconStickers": okStickers,
+		"editForumTopic":            okTrue,
+	}))
+
+	client, err := botapi.NewClient(botapi.Options{
+		Token: testToken, GroupID: groupID, Proxy: "", RetryPauses: nil, SendGap: 0,
+		BaseURL: harness.srv.URL, TopicIconOn: "📈", TopicIconOff: "🤖",
+	})
+	if err != nil {
+		t.Fatalf("клиент не собрался: %v", err)
+	}
+
+	for _, inMode := range []bool{true, false} {
+		err = client.SetTopicInMode(context.Background(), 501, inMode)
+		if err != nil {
+			t.Fatalf("значок не поставлен: %v", err)
+		}
+	}
+
+	calls := harness.recorded()
+	if text(t, calls[1].body, "icon_custom_emoji_id") != "aa" || text(t, calls[2].body, "icon_custom_emoji_id") != "bb" {
+		t.Fatalf("вызовы подставы: %v", calls)
+	}
+}
+
+// TestTopicIconKnown: значок сверяется с закрытым набором, а недоступность набора — отказ, а не
+// ответ «значка нет».
+func TestTopicIconKnown(t *testing.T) {
+	t.Parallel()
+
+	harness := newRig(t, byMethod(map[string]string{"getForumTopicIconStickers": okStickers}))
+	client := harness.client(t)
+
+	for emoji, want := range map[string]bool{"🤖": true, "🦄": false} {
+		known, err := client.TopicIconKnown(context.Background(), emoji)
+		if err != nil || known != want {
+			t.Fatalf("%s: в наборе %v, отказ %v", emoji, known, err)
+		}
+	}
+
+	if calls := harness.recorded(); len(calls) != 1 {
+		t.Fatalf("набор спрошен не однажды: %v", calls)
+	}
+
+	down := newRig(t, func(int, string) reply { return broken() }).client(t)
+
+	_, err := down.TopicIconKnown(context.Background(), "🤖")
+	if err == nil || botapi.Code(err) != protocol.CodeNetwork {
+		t.Fatalf("недоступность набора не названа сетью: %v", err)
 	}
 }
 
@@ -490,13 +542,23 @@ func TestTopicIconMissingRefusesByName(t *testing.T) {
 		"getForumTopicIconStickers": `{"ok":true,"result":[{"emoji":"📈","custom_emoji_id":"aa"}]}`,
 	}))
 
-	err := harness.client(t).SetTopicInMode(context.Background(), 501, true)
-	if err == nil {
-		t.Fatal("значка в наборе нет, а отказа нет")
+	client := harness.client(t)
+
+	for _, inMode := range []bool{true, false} {
+		err := client.SetTopicInMode(context.Background(), 501, inMode)
+		if err == nil {
+			t.Fatal("значка в наборе нет, а отказа нет")
+		}
+
+		if botapi.Code(err) != "telegram-refused" || !strings.Contains(err.Error(), "наборе значков") {
+			t.Fatalf("отказ не называет причину: %v", err)
+		}
 	}
 
-	if botapi.Code(err) != "telegram-refused" || !strings.Contains(err.Error(), "наборе значков") {
-		t.Fatalf("отказ не называет причину: %v", err)
+	for _, one := range harness.recorded() {
+		if one.method == "editForumTopic" {
+			t.Fatalf("значок вне набора заменён молча: %v", one.body)
+		}
 	}
 }
 
@@ -538,18 +600,29 @@ func TestPinAndChatActionAndEdit(t *testing.T) {
 	}
 }
 
-// TestNewClientChecksOptions: без токена, без группы и с токеном не той формы клиент не
+// withOptions собирает годные значения клиента с одной названной порчей.
+func withOptions(spoil func(*botapi.Options)) botapi.Options {
+	opts := botapi.Options{
+		Token: testToken, GroupID: groupID, Proxy: "", RetryPauses: nil, SendGap: 0, BaseURL: "",
+		TopicIconOn: testIconOn, TopicIconOff: testIconOff,
+	}
+	spoil(&opts)
+
+	return opts
+}
+
+// TestNewClientChecksOptions: без токена, без группы, с токеном не той формы и без значка клиент не
 // собирается — служба не поднимается наполовину.
 func TestNewClientChecksOptions(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]botapi.Options{
-		"без токена":          {Token: "", GroupID: groupID, Proxy: "", RetryPauses: nil, SendGap: 0, BaseURL: ""},
-		"без группы":          {Token: testToken, GroupID: 0, Proxy: "", RetryPauses: nil, SendGap: 0, BaseURL: ""},
-		"токен без двоеточия": {Token: "abc", GroupID: groupID, Proxy: "", RetryPauses: nil, SendGap: 0, BaseURL: ""},
-		"в начале токена не id": {
-			Token: "бот:abc", GroupID: groupID, Proxy: "", RetryPauses: nil, SendGap: 0, BaseURL: "",
-		},
+		"без токена":            withOptions(func(opts *botapi.Options) { opts.Token = "" }),
+		"без группы":            withOptions(func(opts *botapi.Options) { opts.GroupID = 0 }),
+		"токен без двоеточия":   withOptions(func(opts *botapi.Options) { opts.Token = "abc" }),
+		"в начале токена не id": withOptions(func(opts *botapi.Options) { opts.Token = "бот:abc" }),
+		"без значка вкл":        withOptions(func(opts *botapi.Options) { opts.TopicIconOn = "" }),
+		"без значка выкл":       withOptions(func(opts *botapi.Options) { opts.TopicIconOff = "" }),
 	}
 
 	for name, opts := range cases {

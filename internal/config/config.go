@@ -33,6 +33,18 @@ const DefaultLogMaxBytes int64 = 2 << 20
 // обычно на этой неделе; старше держать незачем.
 const DefaultLogKeep = 5
 
+// Ключи значков темы.
+const (
+	TopicIconOnKey  = "topic_icon_on"
+	TopicIconOffKey = "topic_icon_off"
+)
+
+// Значки темы, когда настройки своих не назвали.
+const (
+	DefaultTopicIconOn  = "🤖"
+	DefaultTopicIconOff = "💻"
+)
+
 // ErrNoConfig — путь к настройкам не назван.
 var ErrNoConfig = errors.New("путь к настройкам не назван")
 
@@ -55,6 +67,8 @@ type Config struct {
 	LogMaxBytes      int64         `mapstructure:"log_max_bytes"`
 	LogKeep          int           `mapstructure:"log_keep"`
 	RetryPausesRaw   []string      `mapstructure:"retry_pauses"`
+	TopicIconOn      string        `mapstructure:"topic_icon_on"`
+	TopicIconOff     string        `mapstructure:"topic_icon_off"`
 
 	// statuslineNamed — ключ `statusline_root` назван в файле настроек. Установка по нему решает,
 	// дописывать ли корень, и уже названное владельцем значение не затирает.
@@ -212,12 +226,51 @@ func Load(path string) (*Config, error) {
 		)
 	}
 
+	err = cfg.settleTopicIcons(path)
+	if err != nil {
+		return nil, err
+	}
+
 	err = cfg.validate()
 	if err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// settleTopicIcons расставляет значки темы: ключа нет — значок по умолчанию, ключ без значения —
+// отказ. Значка «никакого» у темы службы нет. Есть ли значок в наборе Telegram, отсюда не видно:
+// набор спрашивается сетью, и сверяют его самопроверка, установка и запуск службы.
+func (c *Config) settleTopicIcons(path string) error {
+	icons := []struct {
+		key      string
+		value    *string
+		fallback string
+	}{
+		{TopicIconOnKey, &c.TopicIconOn, DefaultTopicIconOn},
+		{TopicIconOffKey, &c.TopicIconOff, DefaultTopicIconOff},
+	}
+
+	for _, icon := range icons {
+		named, err := keyNamed(path, icon.key)
+		if err != nil {
+			return err
+		}
+
+		if !named {
+			*icon.value = icon.fallback
+
+			continue
+		}
+
+		if *icon.value == "" {
+			return fmt.Errorf("%w: `%s` назван без значка: назови значок или убери ключ совсем — без него %s",
+				ErrBadConfig, icon.key, icon.fallback)
+		}
+	}
+
+	return nil
 }
 
 // Path отдаёт путь к файлу настроек из окружения.

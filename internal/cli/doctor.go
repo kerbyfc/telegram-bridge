@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/kerbyfc/telegram-bridge/internal/botapi"
 	"github.com/kerbyfc/telegram-bridge/internal/config"
 	"github.com/kerbyfc/telegram-bridge/internal/endpoint"
 	"github.com/kerbyfc/telegram-bridge/internal/install"
@@ -103,6 +102,7 @@ func doctor(cmd *cobra.Command, vip *viper.Viper) error {
 
 	checks := []check{
 		settingsCheck(cfg, path),
+		configuredIconsCheck(cmd.Context(), cfg),
 		stateCheck(cfg),
 		journalCheck(cfg),
 		autostartCheck(cmd, vip, live[0].State == stateOK),
@@ -144,10 +144,7 @@ func doctor(cmd *cobra.Command, vip *viper.Viper) error {
 // settingsCheck проверяет настройки: токен разбирается в id бота, группа — супергруппа, владелец
 // назван. Вызова платформы здесь нет: токен и есть ответ на вопрос «кто этот бот».
 func settingsCheck(cfg *config.Config, path string) check {
-	client, err := botapi.NewClient(botapi.Options{
-		Token: cfg.BotToken, GroupID: cfg.GroupID, Proxy: cfg.Proxy,
-		RetryPauses: cfg.RetryPauses, SendGap: botapi.DefaultSendGap, BaseURL: "",
-	})
+	client, err := newClient(cfg)
 	if err != nil {
 		return check{Name: "настройки", State: stateFailed, Detail: path + ": " + err.Error()}
 	}

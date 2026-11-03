@@ -42,10 +42,13 @@ travel only through its connection.
   at the end. A topic and a session are one to one: a name taken by a live session gives the second
   session the lowest free suffix `#2`, `#3` — two chats with the same name get `X` and `X#2`. A deleted
   topic is created again on the first "topic not found" error.
-- **A session that ended** has its topic closed and renamed to `[кончилась] <name>`, and the name is
-  free again: a new session with that name gets it without a suffix, in a new topic. If the session
-  returns (`claude --resume`), the topic is reopened and gets its name back, or the lowest free suffix
-  if the name is taken. A word written to the closed topic is held, with the same 😴 and the same reply
+- **Topic icon.** There are two: `topic_icon_on` while the mode is on, `topic_icon_off` after `/here`,
+  after the session ends and on a new topic without the mode. The service never removes an icon.
+- **A session that ended** has its topic switched to the off icon and closed. The topic keeps its name,
+  and the name is free again: a new session with that name gets it without a suffix, in a new topic,
+  and two closed topics may carry the same name. If the session returns (`claude --resume`), the topic
+  is reopened and gets the icon of its mode; it is renamed only if the name is taken, to the lowest free
+  suffix. A word written to the closed topic is held, with the same 😴 and the same reply
   as for any session outside the mode. A refusal from Telegram goes to the log and changes nothing else.
 - **Only finished replies reach the topic**, each as one message; a long one is split at Telegram's
   limit, in order. Tool output, tool input and thinking never reach the topic; an interrupted reply
@@ -135,6 +138,8 @@ owner_id: 111111
 state_root: /Users/<name>/.dm-telegram-go
 default_topic_name: work
 statusline_root: ~/.claude               # status line state root; no key — ~/.claude too
+topic_icon_on: 🤖                        # topic icon while the mode is on
+topic_icon_off: 💻                       # topic icon otherwise
 proxy: ""                                # an explicit proxy if one is needed; empty — direct
 reconnect_grace: 1h                      # how long a session is kept after its connection ends
 poll_timeout: 50s                        # long polling of getUpdates
@@ -143,6 +148,14 @@ log_max_bytes: 2097152                   # log rotation size
 log_keep: 5                              # kept log generations
 retry_pauses: ["5s", "15s", "1m", "5m"]  # pauses between polls after a failure
 ```
+
+`topic_icon_on` and `topic_icon_off` are optional, with the defaults shown, and must come from Telegram's
+closed set, `getForumTopicIconStickers`; a key with no value is refused. An icon outside the set is never
+silently replaced: `doctor` and `install` refuse and name the key and the value, and the service does
+not start, as with any invalid setting. The set can only be read over the network, so when Telegram
+cannot be reached the value counts as not confirmed rather than invalid: `doctor` says so, `install`
+reports it and goes on, the service starts and writes it to the log. A changed icon takes effect after
+the service restarts, on each topic's next switch; icons already in place stay.
 
 ### Installing and removing
 
@@ -315,11 +328,11 @@ telegram-bridge doctor --config ~/.dm-telegram-go/config.yaml --json
 telegram-bridge doctor --config ~/.dm-telegram-go/config.yaml --session <id>   # plus an id check
 ```
 
-There are seven checks, each named by a line: settings (the token is parsed into a bot id, the group is
-a supergroup, the owner is named), the state directory, the log with its generations and the process
+There are eight checks, each named by a line: settings (the token is parsed into a bot id, the group is
+a supergroup, the owner is named), topic icons (both are in Telegram's set), the state directory, the log with its generations and the process
 output, the autostart entry, the liveness of the service itself, the bot and the group, and session
 connections. The token, the group and the channel to Telegram are confirmed by the outcome of the last
-poll — the self-check makes no second call to the platform. No service — the check fails, and the last
+poll — the only call the self-check makes itself is the one for the set of icons. No service — the check fails, and the last
 lines of **both** files are appended to the refusal: its own log and the process output where a panic
 goes (the autostart system writes it, and the log does not have it at all). The cause of a crash must be
 visible with one command, not only as silence in the topic.
@@ -336,7 +349,7 @@ non-zero on a refusal, but not on "not confirmed": the first long poll returns a
 `doctor` called right after installation names the bot and the group as not confirmed rather than
 refused. A self-check nobody trusts checks nothing.
 
-With `--session` an eighth check is added — **an id check**. `/clear` ends the conversation but not the
+With `--session` a ninth check is added — **an id check**. `/clear` ends the conversation but not the
 process, and the mod deliberately does not say `bye` to the service: if it did, the channel would die
 before the client. So the service may keep knowing the session under the old id, while the status line
 and the short call count the id from the client. The check names the client's id, the ids the service

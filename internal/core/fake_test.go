@@ -21,6 +21,24 @@ const (
 	methodGetUpdates  = "GetUpdates"
 )
 
+// Вызовы платформы, каждый из которых оставляет в теме служебную строку.
+const (
+	callCreate  = "create"
+	callRename  = "rename"
+	callClose   = "close"
+	callReopen  = "reopen"
+	callIconOn  = "icon-on"
+	callIconOff = "icon-off"
+)
+
+// Значки темы, какими их держит платформа: значок режима, значок вне режима и значок по умолчанию,
+// которого служба не ставит никогда.
+const (
+	iconOn   = "вкл"
+	iconOff  = "выкл"
+	iconNone = "нет"
+)
+
 // sentMessage — отправленное поддельным клиентом сообщение темы.
 type sentMessage struct {
 	topicID int64
@@ -50,6 +68,8 @@ type fakeAPI struct {
 	iconCalls int
 	// iconRefusals — сколько ближайших переключений значка платформа отобьёт отказом.
 	iconRefusals int
+	// calls — удавшиеся вызовы платформы по порядку: по ним видны порядок и лишние служебные строки.
+	calls []string
 	// polled — смещения, с которыми ядро звало опрос, по порядку.
 	polled []int64
 
@@ -147,6 +167,7 @@ func (f *fakeAPI) CreateTopic(_ context.Context, name string) (int64, error) {
 
 	f.nextTopic++
 	f.created = append(f.created, name)
+	f.calls = append(f.calls, callCreate)
 	f.names[f.nextTopic] = name
 
 	return f.nextTopic, nil
@@ -175,6 +196,7 @@ func (f *fakeAPI) RenameTopic(_ context.Context, topicID int64, name string) err
 	}
 
 	f.renamed = append(f.renamed, name)
+	f.calls = append(f.calls, callRename)
 	f.names[topicID] = name
 
 	return nil
@@ -197,6 +219,7 @@ func (f *fakeAPI) CloseTopic(_ context.Context, topicID int64) error {
 	}
 
 	f.closed[topicID] = true
+	f.calls = append(f.calls, callClose)
 
 	return nil
 }
@@ -217,6 +240,7 @@ func (f *fakeAPI) ReopenTopic(_ context.Context, topicID int64) error {
 	}
 
 	f.closed[topicID] = false
+	f.calls = append(f.calls, callReopen)
 
 	return nil
 }
@@ -250,6 +274,12 @@ func (f *fakeAPI) SetTopicInMode(_ context.Context, topicID int64, inMode bool) 
 	}
 
 	f.inMode[topicID] = inMode
+
+	if inMode {
+		f.calls = append(f.calls, callIconOn)
+	} else {
+		f.calls = append(f.calls, callIconOff)
+	}
 
 	return nil
 }
@@ -386,13 +416,44 @@ func (f *fakeAPI) inModeOf(topicID int64) bool {
 	return f.inMode[topicID]
 }
 
-// setIcon ставит теме значок мимо службы — так его меняет владелец руками: `true` — значок
-// режима, `false` — значок снят.
-func (f *fakeAPI) setIcon(topicID int64, inMode bool) {
+// iconOf отдаёт значок темы на платформе.
+func (f *fakeAPI) iconOf(topicID int64) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.inMode[topicID] = inMode
+	inMode, set := f.inMode[topicID]
+
+	switch {
+	case !set:
+		return iconNone
+	case inMode:
+		return iconOn
+	default:
+		return iconOff
+	}
+}
+
+// platformCalls отдаёт удавшиеся вызовы платформы по порядку.
+func (f *fakeAPI) platformCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), f.calls...)
+}
+
+// setIcon меняет значок мимо службы — так его меняет владелец руками: `true` — какой-то значок,
+// `false` — значок снят.
+func (f *fakeAPI) setIcon(topicID int64, set bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if set {
+		f.inMode[topicID] = true
+
+		return
+	}
+
+	delete(f.inMode, topicID)
 }
 
 // refuseIcon ставит отказ платформы на ближайшие переключения значка.
@@ -497,6 +558,7 @@ func newFakeAPI() *fakeAPI {
 		reactions: map[int]botapi.Mark{},
 		actions:   0,
 		iconCalls: 0,
+		calls:     nil,
 		polled:    nil,
 
 		iconRefusals: 0,

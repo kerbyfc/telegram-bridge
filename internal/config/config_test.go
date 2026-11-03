@@ -46,6 +46,39 @@ default_topic_name: alpha
 	}
 }
 
+// TestTopicIcons: значки тем — 🤖 и 💻, пока настройки не назвали других. Названный пустым значок —
+// отказ с именем ключа: значка «никакого» у темы службы нет.
+func TestTopicIcons(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(write(t, settingsBody("")))
+	if err != nil {
+		t.Fatalf("настройки не прочитаны: %v", err)
+	}
+
+	if cfg.TopicIconOn != "🤖" || cfg.TopicIconOff != "💻" {
+		t.Fatalf("значки по умолчанию: %q, %q", cfg.TopicIconOn, cfg.TopicIconOff)
+	}
+
+	cfg, err = config.Load(write(t, settingsBody("topic_icon_on: 📈\ntopic_icon_off: 🤖\n")))
+	if err != nil {
+		t.Fatalf("настройки не прочитаны: %v", err)
+	}
+
+	if cfg.TopicIconOn != "📈" || cfg.TopicIconOff != "🤖" {
+		t.Fatalf("названные значки не взяты: %q, %q", cfg.TopicIconOn, cfg.TopicIconOff)
+	}
+
+	for _, key := range []string{"topic_icon_on", "topic_icon_off"} {
+		for _, value := range []string{"\"\"", "~", ""} {
+			_, err = config.Load(write(t, settingsBody(key+": "+value+"\n")))
+			if !errors.Is(err, config.ErrBadConfig) || !strings.Contains(err.Error(), key) {
+				t.Fatalf("%s: %q: значок пустым принят: %v", key, value, err)
+			}
+		}
+	}
+}
+
 // TestNoOwnerRefusesToStart: без `owner_id` служба не поднимается — иначе любой участник группы
 // получал бы ввод уровня владельца.
 func TestNoOwnerRefusesToStart(t *testing.T) {

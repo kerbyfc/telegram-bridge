@@ -72,6 +72,7 @@ func runInstall(cmd *cobra.Command, vip *viper.Viper) error {
 
 	opts.Source = text(cmd, "binary")
 	opts.Started = serviceStarted(cmd, vip)
+	opts.Verify = verifyIcons(cmd.Context())
 
 	asJSON := machine(cmd)
 	if asJSON {

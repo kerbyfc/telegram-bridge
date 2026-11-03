@@ -178,12 +178,14 @@ func TestProxyChild(t *testing.T) {
 	explicit := os.Getenv(proxyExplicitEnv)
 
 	client, err := botapi.NewClient(botapi.Options{
-		Token:       testToken,
-		GroupID:     groupID,
-		Proxy:       explicit,
-		RetryPauses: nil,
-		SendGap:     0,
-		BaseURL:     unroutable,
+		Token:        testToken,
+		GroupID:      groupID,
+		TopicIconOn:  testIconOn,
+		TopicIconOff: testIconOff,
+		Proxy:        explicit,
+		RetryPauses:  nil,
+		SendGap:      0,
+		BaseURL:      unroutable,
 	})
 	if err != nil {
 		t.Fatalf("клиент не собрался: %v", err)
@@ -240,12 +242,14 @@ func TestOnlyIPv4Dialed(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client, err := botapi.NewClient(botapi.Options{
-		Token:       testToken,
-		GroupID:     groupID,
-		Proxy:       "",
-		RetryPauses: nil,
-		SendGap:     0,
-		BaseURL:     srv.URL,
+		Token:        testToken,
+		GroupID:      groupID,
+		TopicIconOn:  testIconOn,
+		TopicIconOff: testIconOff,
+		Proxy:        "",
+		RetryPauses:  nil,
+		SendGap:      0,
+		BaseURL:      srv.URL,
 	})
 	if err != nil {
 		t.Fatalf("клиент не собрался: %v", err)
@@ -281,12 +285,14 @@ func TestTLSUntrustedNamedAndNotRetried(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client, err := botapi.NewClient(botapi.Options{
-		Token:       testToken,
-		GroupID:     groupID,
-		Proxy:       "",
-		RetryPauses: []time.Duration{time.Millisecond, time.Millisecond},
-		SendGap:     0,
-		BaseURL:     srv.URL,
+		Token:        testToken,
+		GroupID:      groupID,
+		TopicIconOn:  testIconOn,
+		TopicIconOff: testIconOff,
+		Proxy:        "",
+		RetryPauses:  []time.Duration{time.Millisecond, time.Millisecond},
+		SendGap:      0,
+		BaseURL:      srv.URL,
 	})
 	if err != nil {
 		t.Fatalf("клиент не собрался: %v", err)
@@ -342,12 +348,14 @@ func TestProxyTunnelCarriesAPIName(t *testing.T) {
 	tunnels, proxyAddr := newTunnel(t, endpoint.Listener.Addr().String())
 
 	client, err := botapi.NewClient(botapi.Options{
-		Token:       testToken,
-		GroupID:     groupID,
-		Proxy:       "http://bridge:secret@" + proxyAddr,
-		RetryPauses: []time.Duration{time.Millisecond, time.Millisecond},
-		SendGap:     0,
-		BaseURL:     "https://" + apiHost,
+		Token:        testToken,
+		GroupID:      groupID,
+		TopicIconOn:  testIconOn,
+		TopicIconOff: testIconOff,
+		Proxy:        "http://bridge:secret@" + proxyAddr,
+		RetryPauses:  []time.Duration{time.Millisecond, time.Millisecond},
+		SendGap:      0,
+		BaseURL:      "https://" + apiHost,
 	})
 	if err != nil {
 		t.Fatalf("клиент не собрался: %v", err)

@@ -104,7 +104,7 @@ func TestHealedTopicSetsIconOnce(t *testing.T) {
 	rig := newRig(t)
 	conn, on := rig.mod("s1", topicAlpha)
 
-	// Снятие режима идёт по пропавшей теме: лечение заведёт её заново и поставит значок.
+	// Снятие режима идёт по пропавшей теме: лечение заведёт её заново и поставит значок выкл.
 	rig.api.plan(on.TopicID, 1)
 	rig.do(conn, rig.req(protocol.OpModeOff))
 	noJournalEvent(t, rig, "topic-icon-failed")
@@ -113,10 +113,15 @@ func TestHealedTopicSetsIconOnce(t *testing.T) {
 		t.Fatalf("тема не заведена заново: %v", names)
 	}
 
-	// Вызовов значка два: включение режима и снятие, отбитое пропавшей темой. Повтор снятия
-	// после лечения был бы третьим.
-	if calls := rig.api.iconCallCount(); calls != 2 {
-		t.Fatalf("вызовов значка %d, а их два: значок после лечения поставлен ещё раз", calls)
+	// Вызовов значка три: включение режима, снятие, отбитое пропавшей темой, и значок выкл новой
+	// темы. Повтор снятия после лечения был бы четвёртым.
+	if calls := rig.api.iconCallCount(); calls != 3 {
+		t.Fatalf("вызовов значка %d, а их три: значок после лечения поставлен не один раз", calls)
+	}
+
+	status := rig.do(conn, rig.req(protocol.OpModeStatus))
+	if got := rig.api.iconOf(status.TopicID); got != iconOff {
+		t.Fatalf("значок новой темы без режима: %q", got)
 	}
 }
 
@@ -155,8 +160,7 @@ func TestHandRemovedIconIsSetAgain(t *testing.T) {
 
 // TestHandSetIconIsClearedOnModeOff: значок, поставленный руками при снятом режиме, по id эмодзи
 // от значка режима не отличить, и запись реестра о значке становится неизвестной. Снятие режима
-// после этого уходит платформе, а не пропускается: значок приходит в то состояние, что держит
-// служба.
+// после этого уходит платформе, а не пропускается: тема снова носит значок выкл.
 func TestHandSetIconIsClearedOnModeOff(t *testing.T) {
 	t.Parallel()
 
@@ -173,8 +177,8 @@ func TestHandSetIconIsClearedOnModeOff(t *testing.T) {
 
 	rig.do(conn, rig.req(protocol.OpModeOff))
 
-	if rig.api.inModeOf(on.TopicID) {
-		t.Fatal("значок, поставленный руками, не снят: переключение пропущено как «уже так»")
+	if got := rig.api.iconOf(on.TopicID); got != iconOff {
+		t.Fatalf("значок, поставленный руками, не заменён значком выкл: %q", got)
 	}
 
 	if entry = registryEntry(t, rig, on.TopicID); entry.IconUnknown || entry.InMode {

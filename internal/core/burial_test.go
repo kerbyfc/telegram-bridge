@@ -2,18 +2,15 @@ package core_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/kerbyfc/telegram-bridge/internal/botapi"
 	"github.com/kerbyfc/telegram-bridge/internal/protocol"
 	"github.com/kerbyfc/telegram-bridge/internal/store"
 )
-
-// buriedAlpha — имя темы `alpha` кончившейся сессии.
-const buriedAlpha = "[кончилась] alpha"
 
 // sessionRecord читает запись сессии с диска.
 func (r *rig) sessionRecord(id string) *store.Session {
@@ -64,25 +61,35 @@ func (r *rig) journalled(event string, code protocol.Code) bool {
 	return false
 }
 
-// TestByeClosesAndRenamesTopic: сессия кончилась — тема закрыта и названа `[кончилась] <имя>`.
-func TestByeClosesAndRenamesTopic(t *testing.T) {
+// TestByeSetsOffIconAndClosesTopic: сессия кончилась — значок выкл ставится до закрытия, имя темы не
+// правится.
+func TestByeSetsOffIconAndClosesTopic(t *testing.T) {
 	t.Parallel()
 
 	rig := newRig(t)
 	conn, on := rig.mod("s1", topicAlpha)
 
 	before := len(rig.api.texts(on.TopicID))
+	calls := len(rig.api.platformCalls())
 
 	if resp := rig.do(conn, rig.req(protocol.OpBye)); !resp.OK {
 		t.Fatalf("`bye` отбит: %+v", resp.Error)
+	}
+
+	if got := rig.api.platformCalls()[calls:]; !slices.Equal(got, []string{callIconOff, callClose}) {
+		t.Fatalf("погребение звало платформу так: %v", got)
 	}
 
 	if !rig.api.closedOf(on.TopicID) {
 		t.Fatal("тема кончившейся сессии не закрыта")
 	}
 
-	if got := rig.api.nameOf(on.TopicID); got != buriedAlpha {
+	if got := rig.api.nameOf(on.TopicID); got != topicAlpha {
 		t.Fatalf("имя темы кончившейся сессии: %q", got)
+	}
+
+	if got := rig.api.iconOf(on.TopicID); got != iconOff {
+		t.Fatalf("значок темы кончившейся сессии: %q", got)
 	}
 
 	if texts := rig.api.texts(on.TopicID); len(texts) != before {
@@ -90,11 +97,11 @@ func TestByeClosesAndRenamesTopic(t *testing.T) {
 	}
 
 	// Погребение идемпотентно: повторный `bye` платформу больше не зовёт.
-	renames := len(rig.api.renamedNames())
+	calls = len(rig.api.platformCalls())
 	rig.do(conn, rig.req(protocol.OpBye))
 
-	if got := len(rig.api.renamedNames()); got != renames {
-		t.Fatalf("повторный `bye` тронул тему: %d переименований против %d", got, renames)
+	if got := rig.api.platformCalls()[calls:]; len(got) != 0 {
+		t.Fatalf("повторный `bye` тронул тему: %v", got)
 	}
 }
 
@@ -115,8 +122,8 @@ func TestExpiredGraceClosesTopic(t *testing.T) {
 	time.Sleep(2 * rig.cfg.ReconnectGrace)
 	rig.reap()
 
-	if !rig.api.closedOf(on.TopicID) || rig.api.nameOf(on.TopicID) != buriedAlpha {
-		t.Fatalf("тема не закрыта: %q", rig.api.nameOf(on.TopicID))
+	if !rig.api.closedOf(on.TopicID) || rig.api.iconOf(on.TopicID) != iconOff {
+		t.Fatalf("тема не погребена: закрыта %v, значок %q", rig.api.closedOf(on.TopicID), rig.api.iconOf(on.TopicID))
 	}
 }
 
@@ -135,41 +142,80 @@ func TestDisplacedByeLeavesTopicOpen(t *testing.T) {
 	}
 }
 
-// TestBuriedNameKeepsLimitAndNumber: приставка входит в предел платформы, режется начало имени, а
-// номер остаётся на конце.
-func TestBuriedNameKeepsLimitAndNumber(t *testing.T) {
+// TestBurialLeavesNameAlone: погребение имени не правит — ни длинного, ни с номером.
+func TestBurialLeavesNameAlone(t *testing.T) {
 	t.Parallel()
 
-	rig := newRig(t)
-	long := strings.Repeat("я", 300)
+	for _, name := range []string{topicAlpha, strings.Repeat("я", 300)} {
+		rig := newRig(t)
 
-	rig.mod("s1", long)
-	conn, on := rig.mod("s2", long)
+		rig.mod("s1", name)
+		conn, on := rig.mod("s2", name)
+		held := rig.api.nameOf(on.TopicID)
 
-	rig.do(conn, rig.req(protocol.OpBye))
+		rig.do(conn, rig.req(protocol.OpBye))
 
-	got := rig.api.nameOf(on.TopicID)
-	if !strings.HasPrefix(got, "[кончилась] я") || !strings.HasSuffix(got, "я…#2") {
-		t.Fatalf("имя темы: %q", got)
-	}
+		if got := rig.api.nameOf(on.TopicID); got != held || !strings.HasSuffix(got, "#2") {
+			t.Fatalf("имя темы %q стало %q", held, got)
+		}
 
-	if utf8.RuneCountInString(got) != topicNameLimit {
-		t.Fatalf("имя темы вне предела: %d знаков", utf8.RuneCountInString(got))
+		if got := rig.api.renamedNames(); len(got) != 0 {
+			t.Fatalf("погребение переименовало тему: %v", got)
+		}
 	}
 }
 
-// TestBuriedNumberStaysShort: номер короткого имени остаётся на конце и без резки.
-func TestBuriedNumberStaysShort(t *testing.T) {
+// TestBurialWithoutModeCallsOnlyClose: значок выкл уже стоит, и лишнего вызова значка нет.
+func TestBurialWithoutModeCallsOnlyClose(t *testing.T) {
 	t.Parallel()
 
 	rig := newRig(t)
-	rig.mod("s1", topicAlpha)
-	conn, on := rig.mod("s2", topicAlpha)
+	conn, _ := rig.mod("s1", topicAlpha)
+	rig.do(conn, rig.req(protocol.OpModeOff))
+
+	calls := len(rig.api.platformCalls())
 
 	rig.do(conn, rig.req(protocol.OpBye))
 
-	if got := rig.api.nameOf(on.TopicID); got != "[кончилась] alpha#2" {
-		t.Fatalf("имя темы: %q", got)
+	if got := rig.api.platformCalls()[calls:]; !slices.Equal(got, []string{callClose}) {
+		t.Fatalf("погребение без режима звало платформу так: %v", got)
+	}
+}
+
+// TestReloadPlatformCalls: перезагрузка мода — `bye` и новое `hello`. Каждый вызов здесь — одна
+// служебная строка в теме: в режиме их четыре, без режима две, и имя не правится вовсе.
+func TestReloadPlatformCalls(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		inMode bool
+		want   []string
+	}{
+		{"в режиме", true, []string{callIconOff, callClose, callReopen, callIconOn}},
+		{"без режима", false, []string{callClose, callReopen}},
+	}
+
+	for _, one := range cases {
+		rig := newRig(t)
+		conn, on := rig.mod("s1", topicAlpha)
+
+		if !one.inMode {
+			rig.do(conn, rig.req(protocol.OpModeOff))
+		}
+
+		calls := len(rig.api.platformCalls())
+
+		rig.do(conn, rig.req(protocol.OpBye))
+		rig.hello("s1", protocol.RoleSession, protocol.KindMod)
+
+		if got := rig.api.platformCalls()[calls:]; !slices.Equal(got, one.want) {
+			t.Fatalf("%s: перезагрузка звала платформу так: %v", one.name, got)
+		}
+
+		if rig.api.nameOf(on.TopicID) != topicAlpha {
+			t.Fatalf("%s: имя темы %q", one.name, rig.api.nameOf(on.TopicID))
+		}
 	}
 }
 
@@ -188,7 +234,7 @@ func TestBuriedNameIsFreed(t *testing.T) {
 		t.Fatalf("новая сессия получила не то: %+v", second)
 	}
 
-	if !rig.api.closedOf(first.TopicID) || rig.api.nameOf(first.TopicID) != buriedAlpha {
+	if !rig.api.closedOf(first.TopicID) || rig.api.nameOf(first.TopicID) != topicAlpha {
 		t.Fatalf("закрытую тему тронули: %q", rig.api.nameOf(first.TopicID))
 	}
 }
@@ -213,8 +259,8 @@ func TestBoundSessionTakesFreedName(t *testing.T) {
 	}
 }
 
-// TestBuriedNamesDoNotCollide: две кончившиеся сессии одного имени держат одно и то же видимое имя:
-// имя с приставкой реестр занятым не считает и именем сессии не называет.
+// TestBuriedNamesDoNotCollide: две кончившиеся сессии одного имени держат одно и то же видимое имя,
+// а новая сессия получает его без суффикса.
 func TestBuriedNamesDoNotCollide(t *testing.T) {
 	t.Parallel()
 
@@ -222,21 +268,15 @@ func TestBuriedNamesDoNotCollide(t *testing.T) {
 
 	for _, id := range []string{"s1", "s2", "s3"} {
 		conn, on := rig.mod(id, topicAlpha)
-		if on.TopicName != topicAlpha {
-			t.Fatalf("%s получила %q", id, on.TopicName)
+		if on.TopicName != topicAlpha || !on.Created {
+			t.Fatalf("%s получила %+v", id, on)
 		}
 
 		rig.do(conn, rig.req(protocol.OpBye))
 
-		if got := rig.api.nameOf(on.TopicID); got != buriedAlpha {
-			t.Fatalf("%s: имя темы %q", id, got)
+		if got := rig.api.nameOf(on.TopicID); got != topicAlpha || !rig.api.closedOf(on.TopicID) {
+			t.Fatalf("%s: имя темы %q, закрыта %v", id, got, rig.api.closedOf(on.TopicID))
 		}
-	}
-
-	// Слово с приставкой никем не занято: сессия вправе так назваться, и суффикс ей не нужен.
-	_, on := rig.mod("s4", buriedAlpha)
-	if on.TopicName != buriedAlpha || !on.Created {
-		t.Fatalf("имя с приставкой сочтено занятым: %+v", on)
 	}
 }
 
@@ -270,6 +310,10 @@ func TestBuriedHoldsNoModeUntilReturn(t *testing.T) {
 
 	if rig.api.closedOf(on.TopicID) || rig.api.nameOf(on.TopicID) != topicAlpha {
 		t.Fatalf("тема не вернулась: закрыта %v, имя %q", rig.api.closedOf(on.TopicID), rig.api.nameOf(on.TopicID))
+	}
+
+	if got := rig.api.iconOf(on.TopicID); got != iconOn {
+		t.Fatalf("значок вернувшейся в режим сессии: %q", got)
 	}
 
 	if !rig.sessionRecord("s1").Mode {
@@ -314,6 +358,10 @@ func TestReturnWithoutModeStaysWithout(t *testing.T) {
 	if back.Mode != protocol.ModeOff || back.TopicName != topicAlpha || rig.api.closedOf(on.TopicID) {
 		t.Fatalf("возврат не тот: %+v", back)
 	}
+
+	if got := rig.api.iconOf(on.TopicID); got != iconOff {
+		t.Fatalf("значок вернувшейся без режима сессии: %q", got)
+	}
 }
 
 // TestReturnToTakenNameGetsSuffix: имя заняла новая сессия — вернувшаяся берёт обычный суффикс.
@@ -333,6 +381,10 @@ func TestReturnToTakenNameGetsSuffix(t *testing.T) {
 
 	if rig.api.closedOf(first.TopicID) || rig.api.nameOf(first.TopicID) != "alpha#2" {
 		t.Fatalf("тема на платформе: %q", rig.api.nameOf(first.TopicID))
+	}
+
+	if got := rig.api.iconOf(first.TopicID); got != iconOn {
+		t.Fatalf("значок вернувшейся в режим сессии: %q", got)
 	}
 
 	if rig.api.nameOf(second.TopicID) != topicAlpha {
@@ -394,7 +446,7 @@ func TestHereInClosedTopicTakesBackMode(t *testing.T) {
 
 	rig.ownerMessage(on.TopicID, "/here")
 
-	if !rig.api.closedOf(on.TopicID) || rig.api.nameOf(on.TopicID) != buriedAlpha {
+	if !rig.api.closedOf(on.TopicID) || rig.api.iconOf(on.TopicID) != iconOff {
 		t.Fatal("`/here` тронул закрытую тему")
 	}
 
@@ -419,6 +471,10 @@ func TestAwayInClosedTopicBringsItBack(t *testing.T) {
 		t.Fatalf("тема не вернулась: %q", rig.api.nameOf(on.TopicID))
 	}
 
+	if got := rig.api.iconOf(on.TopicID); got != iconOn {
+		t.Fatalf("значок темы, вернувшейся словом `/away`: %q", got)
+	}
+
 	if _, back := rig.hello("s1", protocol.RoleSession, protocol.KindMod); back.Mode != protocol.ModeOn ||
 		back.TopicName != "alpha#2" {
 		t.Fatalf("возврат не тот: %+v", back)
@@ -434,6 +490,8 @@ func TestNameReportOfBuriedLeavesTopic(t *testing.T) {
 	conn, on := rig.mod("s1", "")
 	rig.do(conn, rig.req(protocol.OpBye))
 
+	held := rig.api.nameOf(on.TopicID)
+
 	req := rig.req(protocol.OpNameReport)
 	req.Name = topicBeta
 
@@ -441,7 +499,7 @@ func TestNameReportOfBuriedLeavesTopic(t *testing.T) {
 		t.Fatalf("название отбито: %+v", resp.Error)
 	}
 
-	if got := rig.api.nameOf(on.TopicID); !strings.HasPrefix(got, "[кончилась] ") {
+	if got := rig.api.nameOf(on.TopicID); got != held {
 		t.Fatalf("закрытая тема переименована: %q", got)
 	}
 
@@ -450,7 +508,7 @@ func TestNameReportOfBuriedLeavesTopic(t *testing.T) {
 	}
 }
 
-// TestBurialRefusalsAreJournalled: отказ платформы на правку или закрытие ложится в журнал, а
+// TestBurialRefusalsAreJournalled: отказ платформы на значок или закрытие ложится в журнал, а
 // погребение не откатывается: имя свободно, возврат идёт как обычно.
 func TestBurialRefusalsAreJournalled(t *testing.T) {
 	t.Parallel()
@@ -460,14 +518,14 @@ func TestBurialRefusalsAreJournalled(t *testing.T) {
 	rig := newRig(t)
 	conn, on := rig.mod("s1", topicAlpha)
 
-	rig.api.fail(methodRenameTopic, refusal)
+	rig.api.refuseIcon(1)
 	rig.api.fail(methodCloseTopic, refusal)
 
 	if resp := rig.do(conn, rig.req(protocol.OpBye)); !resp.OK {
 		t.Fatalf("отказ платформы отбил `bye`: %+v", resp.Error)
 	}
 
-	for _, event := range []string{"topic-rename-failed", "topic-close-failed"} {
+	for _, event := range []string{"topic-icon-failed", "topic-close-failed"} {
 		if !rig.journalled(event, protocol.CodeTelegramRefused) {
 			t.Fatalf("в журнале нет %s: %+v", event, rig.journalEvents())
 		}
@@ -485,23 +543,38 @@ func TestBurialRefusalsAreJournalled(t *testing.T) {
 		t.Fatalf("отказ платформы сломал возврат: %+v", back)
 	}
 
-	if !rig.journalled("topic-reopen-failed", protocol.CodeTelegramRefused) {
-		t.Fatalf("отказ открытия не лёг в журнал: %+v", rig.journalEvents())
+	for _, event := range []string{"topic-reopen-failed", "topic-rename-failed"} {
+		if !rig.journalled(event, protocol.CodeTelegramRefused) {
+			t.Fatalf("в журнале нет %s: %+v", event, rig.journalEvents())
+		}
 	}
 }
 
-// TestRenameRefusalStillCloses: отказ правки имени закрытию не мешает.
-func TestRenameRefusalStillCloses(t *testing.T) {
+// TestIconRefusalStillCloses: отказ значка закрытию не мешает, а значок становится неизвестным:
+// исход отказа мог быть любым, и возврат без режима ставит значок выкл ещё раз.
+func TestIconRefusalStillCloses(t *testing.T) {
 	t.Parallel()
 
 	rig := newRig(t)
 	conn, on := rig.mod("s1", topicAlpha)
+	rig.do(conn, rig.req(protocol.OpModeOff))
 
-	rig.api.fail(methodRenameTopic, botapi.Refuse(protocol.CodeTelegramRefused, "нет права"))
+	rig.topicEdited(on.TopicID, botapi.TopicEdit{IconChanged: true, Icon: "5312536423851630001"})
+	rig.api.refuseIcon(1)
 	rig.do(conn, rig.req(protocol.OpBye))
 
 	if !rig.api.closedOf(on.TopicID) {
-		t.Fatal("отказ правки имени отменил закрытие")
+		t.Fatal("отказ значка отменил закрытие")
+	}
+
+	if entry := registryEntry(t, rig, on.TopicID); !entry.IconUnknown {
+		t.Fatalf("отбитый значок не назван неизвестным: %+v", entry)
+	}
+
+	rig.hello("s1", protocol.RoleSession, protocol.KindMod)
+
+	if got := rig.api.iconOf(on.TopicID); got != iconOff {
+		t.Fatalf("значок вернувшейся без режима сессии: %q", got)
 	}
 }
 
@@ -533,6 +606,47 @@ func TestDeletedTopicAtBurial(t *testing.T) {
 
 	if names := rig.api.createdNames(); len(names) != 2 || names[1] != topicAlpha {
 		t.Fatalf("тема не заведена заново: %v", names)
+	}
+}
+
+// TestDeletedTopicWithoutModeAtBurial: значка звать незачем, и пропажу темы называет закрытие.
+func TestDeletedTopicWithoutModeAtBurial(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	conn, on := rig.mod("s1", topicAlpha)
+	rig.do(conn, rig.req(protocol.OpModeOff))
+	rig.api.plan(on.TopicID, 100)
+
+	rig.do(conn, rig.req(protocol.OpBye))
+
+	if names := rig.api.createdNames(); len(names) != 1 {
+		t.Fatalf("погребение завело тему заново: %v", names)
+	}
+
+	if !rig.journalled("topic-gone", protocol.CodeNoTopic) {
+		t.Fatalf("пропажа темы не легла в журнал: %+v", rig.journalEvents())
+	}
+}
+
+// TestNewTopicWithoutModeGetsOffIcon: тема, заведённая заново при снятом режиме, носит значок выкл.
+func TestNewTopicWithoutModeGetsOffIcon(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	conn, on := rig.mod("s1", topicAlpha)
+	rig.do(conn, rig.req(protocol.OpModeOff))
+	rig.do(conn, rig.req(protocol.OpBye))
+
+	rig.api.plan(on.TopicID, 100)
+
+	_, back := rig.hello("s1", protocol.RoleSession, protocol.KindMod)
+	if !back.OK || back.TopicID == on.TopicID || back.Mode != protocol.ModeOff {
+		t.Fatalf("возврат к удалённой теме не тот: %+v", back)
+	}
+
+	if got := rig.api.iconOf(back.TopicID); got != iconOff {
+		t.Fatalf("значок новой темы без режима: %q", got)
 	}
 }
 

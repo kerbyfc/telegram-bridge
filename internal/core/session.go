@@ -169,17 +169,14 @@ func (s *Session) forgetTurn() {
 	s.turnDone = ""
 }
 
-// buriedTopicPrefix — приставка имени темы кончившейся сессии.
-const buriedTopicPrefix = "[кончилась] "
-
 // minTopicNumber — первый номер в номерном суффиксе: первая тема имени зовётся без номера.
 const minTopicNumber = 2
 
 // bury хоронит сессию: её тема закрывается и освобождает имя, ждущие отпускаются, соединения у неё
 // больше нет. Режим погребённая не держит, но и не теряет: насовсем его снимает только слово
-// владельца, поэтому вернувшееся средство сессии застаёт режим таким, каким он был. Значок темы не
-// меняется. Владельцу о похоронах не пишется: служебных строк о жизни сессии в теме нет вовсе,
-// состояние он видит видом самой темы и вкладом в статусную строку.
+// владельца, поэтому вернувшееся средство сессии застаёт режим таким, каким он был. Владельцу о
+// похоронах не пишется: служебных строк о жизни сессии в теме нет вовсе, состояние он видит видом
+// самой темы и вкладом в статусную строку.
 func (c *Core) bury(ctx context.Context, sess *Session, reason string) {
 	c.mu.Lock()
 
@@ -217,9 +214,10 @@ func (c *Core) bury(ctx context.Context, sess *Session, reason string) {
 	c.closeBuriedTopic(context.WithoutCancel(ctx), sess)
 }
 
-// closeBuriedTopic закрывает тему погребённой сессии и правит её имя. Реестр освобождает имя сразу:
-// отказ платформы погребения не откатывает, а только ложится в журнал. Заводить заново здесь нечего:
-// тема, удалённая руками, кончившейся сессии не нужна, а вернувшейся её заведёт `restoreTopic`.
+// closeBuriedTopic ставит теме погребённой сессии значок выкл и закрывает её; имя темы не правится.
+// Реестр освобождает имя сразу: отказ платформы погребения не откатывает, а только ложится в журнал.
+// Заводить заново здесь нечего: тема, удалённая руками, кончившейся сессии не нужна, а вернувшейся её
+// заведёт `restoreTopic`. Поэтому значок ставится прямым вызовом, а не `setTopicMode`, лечащей тему.
 //
 // Отмена запроса работу не обрывает: `bye` приходит на выходе, и соединение может закрыться раньше,
 // чем платформа ответит.
@@ -243,29 +241,30 @@ func (c *Core) closeBuriedTopic(ctx context.Context, sess *Session) {
 	c.mustSave(c.topics.Save(c.store))
 	c.mu.Unlock()
 
-	err := c.api.RenameTopic(ctx, topicID, buriedTopicName(entry.Name))
-	if botapi.IsNoTopic(err) {
+	if entry.InMode || entry.IconUnknown {
+		err := c.api.SetTopicInMode(ctx, topicID, false)
+
+		switch {
+		case botapi.IsNoTopic(err):
+			c.journalTopicRefusal(sess, "topic-gone", topicID, err)
+
+			return
+		case err != nil:
+			c.journalTopicRefusal(sess, "topic-icon-failed", topicID, err)
+			c.markIconUnknown(topicID)
+		default:
+			c.noteIcon(topicID, false)
+		}
+	}
+
+	err := c.api.CloseTopic(ctx, topicID)
+
+	switch {
+	case botapi.IsNoTopic(err):
 		c.journalTopicRefusal(sess, "topic-gone", topicID, err)
-
-		return
-	}
-
-	if err != nil {
-		c.journalTopicRefusal(sess, "topic-rename-failed", topicID, err)
-	}
-
-	err = c.api.CloseTopic(ctx, topicID)
-	if err != nil {
+	case err != nil:
 		c.journalTopicRefusal(sess, "topic-close-failed", topicID, err)
 	}
-}
-
-// buriedTopicName собирает имя темы кончившейся сессии. Приставка входит в предел платформы, а номер
-// остаётся на конце: режется начало, как у всякого имени с номером.
-func buriedTopicName(name string) string {
-	base, number := splitTopicNumber(name)
-
-	return botapi.TopicName(buriedTopicPrefix+base, number)
 }
 
 // splitTopicNumber отделяет от имени темы номерной суффикс; суффикса нет — хвост пуст.

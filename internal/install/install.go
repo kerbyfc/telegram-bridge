@@ -96,6 +96,10 @@ type Options struct {
 	// RestartWait — сколько ждать, пока перезапущенная служба ответит и назовёт время старта не
 	// раньше нынешнего бинарника; пусто — restartWait. Стенду хватает миллисекунд.
 	RestartWait time.Duration
+	// Verify сверяет годные настройки с тем, что файлом не проверить: значки тем с их набором в
+	// Telegram. Отказ отменяет установку до первого шага, примечание ложится строкой отчёта. Пусто —
+	// сверки нет: стенду сеть не нужна.
+	Verify func(*config.Config) (string, error)
 	// Out — куда печатается отчёт о шагах; пусто — никуда.
 	Out io.Writer
 }
@@ -160,6 +164,15 @@ func Install(opts Options) (Paths, error) {
 	report := reporter{out: opts.Out}
 	report.line("ставлю службу моста " + paths.Label)
 	report.step("настройки", Change{Done: false, Note: "годны, " + paths.Config})
+
+	if opts.Verify != nil {
+		note, verifyErr := opts.Verify(settings)
+		if verifyErr != nil {
+			return Paths{}, fmt.Errorf("%w: %w", ErrInstall, verifyErr)
+		}
+
+		report.step("значки тем", Change{Done: false, Note: note})
+	}
 
 	root, err := rootStep(report, paths.Config, settings)
 	if err != nil {

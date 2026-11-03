@@ -71,8 +71,7 @@ type topicRenameParams struct {
 	Name     string `json:"name"`
 }
 
-// topicIconParams — переключение значка темы. Поле значка пишется всегда, в том числе пустым:
-// пустое значение снимает значок, а отсутствие поля оставило бы прежний.
+// topicIconParams — переключение значка темы: id эмодзи из закрытого набора.
 type topicIconParams struct {
 	ChatID   int64  `json:"chat_id"`
 	ThreadID int64  `json:"message_thread_id"`

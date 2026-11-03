@@ -2,6 +2,8 @@ package install_test
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kerbyfc/telegram-bridge/internal/config"
 	"github.com/kerbyfc/telegram-bridge/internal/install"
 )
 
@@ -798,7 +801,49 @@ func options(home, cfgPath, source, instance string, runs *recorder) install.Opt
 		AgentsDir:   "",
 		Runner:      runs.run,
 		Started:     nil,
+		Verify:      nil,
 		RestartWait: 0,
 		Out:         nil,
+	}
+}
+
+// TestVerifyRefusalStopsInstall: отказ сверки настроек отменяет установку до первого шага, а
+// примечание сверки ложится строкой отчёта.
+func TestVerifyRefusalStopsInstall(t *testing.T) {
+	t.Parallel()
+
+	home, cfgPath, source := stand(t)
+	refused := options(home, cfgPath, source, "", &recorder{})
+	refused.Verify = func(*config.Config) (string, error) {
+		return "", errors.New("`topic_icon_on`: значка 🦄 нет")
+	}
+
+	paths, err := install.Install(refused)
+	if !errors.Is(err, install.ErrInstall) || !strings.Contains(err.Error(), "topic_icon_on") {
+		t.Fatalf("отказ сверки не остановил установку: %v", err)
+	}
+
+	if paths.Binary != "" {
+		t.Fatalf("установка назвала адреса: %+v", paths)
+	}
+
+	_, err = os.Stat(filepath.Join(home, ".local", "bin", install.BinaryName))
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("бинарник поставлен при отказе сверки: %v", err)
+	}
+
+	var out strings.Builder
+
+	passed := options(home, cfgPath, source, "", &recorder{})
+	passed.Out = &out
+	passed.Verify = func(*config.Config) (string, error) { return "не подтверждены", nil }
+
+	_, err = install.Install(passed)
+	if err != nil {
+		t.Fatalf("установка не прошла: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "не подтверждены") {
+		t.Fatalf("примечания сверки нет в отчёте: %s", out.String())
 	}
 }
