@@ -361,8 +361,8 @@ func TestLongTopicNameIsCutAtRegistry(t *testing.T) {
 		t.Fatalf("процент не принят: %+v", resp.Error)
 	}
 
-	if edit := editOf(t, rig, pinned); edit != fmt.Sprintf("%d%% %s", shownPercent, entry.Name) {
-		t.Fatalf("закреплённая строка правилась не на резаное имя: %d знаков", runeCount(edit))
+	if edit := editOf(t, rig, pinned); edit != fmt.Sprintf("%d%%", shownPercent) {
+		t.Fatalf("закреплённая строка правилась не на процент: %d знаков", runeCount(edit))
 	}
 
 	noJournalEvent(t, rig, "pinned-failed")

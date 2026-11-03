@@ -717,13 +717,13 @@ func suffixed(name string, num int) string {
 	return botapi.TopicName(name, fmt.Sprintf("#%d", num))
 }
 
-// pinnedLine собирает закреплённую строку по шаблону владельца: процент и название. Имя темы
-// резано по пределу платформы при входе в реестр, поэтому строка из него в предел сообщения
-// укладывается всегда.
+// pinnedLine собирает закреплённую строку: процент. Имя темы и так видно в её шапке, поэтому оно
+// идёт в строку только пока процента нет: сообщение не может быть пустым. Имя темы резано по
+// пределу платформы при входе в реестр, поэтому в предел сообщения укладывается всегда.
 func pinnedLine(name string, percent int) string {
 	if percent <= 0 {
 		return name
 	}
 
-	return fmt.Sprintf("%d%% %s", percent, name)
+	return fmt.Sprintf("%d%%", percent)
 }

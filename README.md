@@ -66,7 +66,7 @@ travel only through its connection.
   it. In away mode a question with options arrives in the topic as a message with numbered options:
   reply with an ordinary message, and the answer comes back to the session. A question without
   options is an ordinary reply, and you answer it the same way.
-- **Topic header.** The pinned line `<x%> <topic name>` carries the context percentage from the mod
+- **Topic header.** The pinned line `<x%>` carries the context percentage from the mod
   (OpenCode has no ready number, so its line carries the name alone); the 🤖 mark means the session is
   in away mode.
 - **The status line** of Claude Code shows the topic name while the mode is on — see "Contribution to

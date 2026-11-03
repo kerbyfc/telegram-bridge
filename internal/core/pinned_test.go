@@ -61,7 +61,7 @@ func TestPercentEditsPinnedWithoutNewMessage(t *testing.T) {
 		t.Fatalf("правка процента отправила в тему новое сообщение: %v", texts)
 	}
 
-	want := fmt.Sprintf("%d%% %s", shownPercent, topicAlpha)
+	want := fmt.Sprintf("%d%%", shownPercent)
 	if edit := editOf(t, rig, pinned); edit != want {
 		t.Fatalf("закреплённая строка правилась на %q, а не на %q", edit, want)
 	}
@@ -87,7 +87,7 @@ func TestLostPinnedLineComesBackPinned(t *testing.T) {
 		t.Fatalf("строка состояния не заведена заново: было %d, стало %d", lost, fresh)
 	}
 
-	want := fmt.Sprintf("%d%% %s", shownPercent, topicAlpha)
+	want := fmt.Sprintf("%d%%", shownPercent)
 
 	texts := rig.api.texts(on.TopicID)
 	if len(texts) != 1 || texts[0] != want {
@@ -142,10 +142,30 @@ func dropMessage(rig *rig, messageID int) {
 	rig.api.sent = kept
 }
 
-// TestRenameEditsPinnedLine: переименование темы правит и закреплённую строку. Иначе имя темы и
-// имя в шапке расходятся, а у клиента, который процента контекста не присылает, прежнее имя
-// осталось бы в закреплённой строке навсегда.
+// TestRenameEditsPinnedLine: пока процента нет, закреплённая строка — имя темы, и переименование
+// правит её: у клиента, который процента не присылает, прежнее имя осталось бы там навсегда.
 func TestRenameEditsPinnedLine(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	conn, on := rig.mod("s1", topicAlpha)
+	pinned := pinnedID(t, rig, on.TopicID)
+
+	rename := rig.req(protocol.OpModeOn)
+	rename.Name = topicBeta
+
+	if resp := rig.do(conn, rename); !resp.OK {
+		t.Fatalf("переименование отказало: %+v", resp.Error)
+	}
+
+	if edit := editOf(t, rig, pinned); edit != topicBeta {
+		t.Fatalf("закреплённая строка осталась %q, а тема — %q", edit, topicBeta)
+	}
+}
+
+// TestRenameKeepsPercentInPinnedLine: с известным процентом имени в закреплённой строке нет, и
+// переименование темы оставляет в ней один процент.
+func TestRenameKeepsPercentInPinnedLine(t *testing.T) {
 	t.Parallel()
 
 	rig := newRig(t)
@@ -164,8 +184,10 @@ func TestRenameEditsPinnedLine(t *testing.T) {
 		t.Fatalf("переименование отказало: %+v", resp.Error)
 	}
 
-	want := fmt.Sprintf("%d%% %s", shownPercent, topicBeta)
+	want := fmt.Sprintf("%d%%", shownPercent)
 	if edit := editOf(t, rig, pinned); edit != want {
-		t.Fatalf("закреплённая строка осталась %q, а тема — %q", edit, topicBeta)
+		t.Fatalf("закреплённая строка %q, а не %q", edit, want)
 	}
+
+	noJournalEvent(t, rig, "pinned-edit-failed")
 }
