@@ -2,7 +2,10 @@ package install_test
 
 import (
 	"bytes"
+	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -200,6 +203,34 @@ func TestWindowsInstallCreatesScheduledTask(t *testing.T) {
 	// Только что заведённая задача не идёт: останавливать нечего, и `/End` на ней тоже отказ.
 	if runs.saw("schtasks /End") {
 		t.Fatalf("установка останавливала не запущенную задачу: %v", runs.calls)
+	}
+}
+
+// TestWindowsTaskIsWellFormedXML: запись задачи разбирается как XML. Планировщик отвергает файл
+// целиком, если в комментарии встретится `--`, и установка падает на создании задачи.
+func TestWindowsTaskIsWellFormedXML(t *testing.T) {
+	t.Parallel()
+
+	home, cfgPath, source := stand(t)
+	runs := newScheduler()
+
+	_, err := install.Install(windowsOptions(home, cfgPath, source, "", runs))
+	if err != nil {
+		t.Fatalf("установка не прошла: %v", err)
+	}
+
+	decoder := xml.NewDecoder(strings.NewReader(decodeTask(runs.created)))
+	decoder.CharsetReader = func(_ string, input io.Reader) (io.Reader, error) { return input, nil }
+
+	for {
+		_, err = decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return
+		}
+
+		if err != nil {
+			t.Fatalf("запись задачи не разбирается как XML: %v", err)
+		}
 	}
 }
 
