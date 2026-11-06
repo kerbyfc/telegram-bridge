@@ -32,6 +32,10 @@ func (c *Core) questionAsk(ctx context.Context, conn *Conn, req protocol.Request
 		return *fail
 	}
 
+	// Вопрос встаёт в тему после вывода разворота прошлой реплики, а не между ними.
+	done := c.enterChain(sess)
+	defer close(done)
+
 	c.topicMu.Lock()
 	defer c.topicMu.Unlock()
 

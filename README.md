@@ -435,7 +435,7 @@ rule, everything specific is in the entry.
 link_resolvers:
   - where: '(?m)^see also:(.*)$'      # place in the reply; a group narrows the search to it
     link: 'https://tracker\.example\.com/[^\s)]+'
-    command: ["/usr/local/bin/tracker", "show", "--plain", "{link}"]
+    command: ["/usr/local/bin/tracker", "show", "--plain", "--", "{link}"]
     timeout: 10s
 ```
 
@@ -445,9 +445,9 @@ in double quotes each one is doubled:
 ```yaml
 link_resolvers:
   - where: '\[\[(.+?)\]\]'
-    link: '.+'
-    command: ['C:\Users\me\bin\tracker.exe', "show", "--plain", "{link}"]
-    # the same in double quotes: ["C:\\Users\\me\\bin\\tracker.exe", "show", "--plain", "{link}"]
+    link: 'https://[^\]]+'
+    command: ['C:\Users\me\bin\tracker.exe', "show", "--plain", "--", "{link}"]
+    # the same in double quotes: ["C:\\Users\\me\\bin\\tracker.exe", "show", "--plain", "--", "{link}"]
     timeout: 10s
 ```
 
@@ -458,25 +458,38 @@ output must be UTF-8 on Windows too: a command printing in the console code page
 - `where` is a Go regular expression (RE2) over the whole finished reply. With a group the link is
   searched only inside it, without one inside the whole match; more than one group is an error.
   Modes are flags of the expression itself: `(?m)` for a line, `(?s)` for text spanning lines.
-- `link` is a Go regular expression for a link inside each place.
+- `link` is a Go regular expression for a link inside each place; an empty match is not a link.
 - `command` is a program and its arguments, run without a shell; `{link}` inside an argument is
   replaced by the link, which stays inside that one argument. A leading `~` in the program is
   expanded.
-- `timeout` is required; on expiry the command is killed with all its children.
+- The link is written by the agent. A link starting with `-` would become a flag of the command:
+  put `--` before `{link}` if the command understands it, and anchor `link` to the start of a real
+  link (`https://…`, `obsidian://…`) rather than matching any word.
+- Windows batch files (`.cmd`, `.bat`, by the named program and by what a `PATH` search finds, in
+  any case) are refused on every platform. `cmd.exe` runs them and parses the arguments again: the
+  `&` of an ordinary link breaks the command, and a link like `x&calc` starts a foreign program. Use
+  an executable wrapper instead.
+- `timeout` is required; on expiry the command is killed with all its children: a process group on
+  macOS, a job object on Windows (the command starts suspended and enters the job before its first
+  instruction). A child that left for its own session (`setsid`) or process group on macOS is out of
+  reach.
 
 The command contract: the link comes as an argument, the ready text goes to stdout in UTF-8, a
 failure is a non-zero exit code. `\r\n` becomes `\n`. In the topic the reply goes as it is, then the
 output of each link as a separate message in the order of the links in the text, cut at Telegram's
-limit. The answer to the reply does not wait for the commands; the next reply of the same session
-waits for the previous one's output so it does not get in between. A failed command, an expired
-timeout, empty output, output that is not UTF-8 or larger than 1 MiB gives a line
-`ссылка не развёрнута: <link>: <reason>` after the reply and a `link-unresolved` log line. A link
-outside a place is not resolved. No key — nothing changes.
+limit. The answer to the reply does not wait for the commands; the next reply, `say` or question of
+the same session waits for the previous reply's output so it does not get in between. A failed
+command, an expired timeout, empty output, output that is not UTF-8, output larger than 1 MiB (the
+command is stopped as soon as it grows past the limit) or a child holding the output open after the
+command exited gives a line `ссылка не развёрнута: <link>: <reason>` after the reply and a
+`link-unresolved` log line. A reply that did not reach the topic stops its commands; nothing follows
+it. On service stop the commands are killed, nothing goes to the topic, and each dropped link leaves a
+`link-dropped` log line. A link outside a place is not resolved. No key — nothing changes.
 
 A broken entry (an invalid expression, more than one group in `where`, an empty command, `{link}`
-in the program or in no argument at all, a missing or invalid `timeout`) is an error loading the
-settings: the service does not start. `doctor` adds a "ссылки" check: the program of each entry is
-found and executable.
+in the program or in no argument at all, a missing or invalid `timeout`, a batch file as the program)
+is an error loading the settings: the service does not start. `doctor` adds a "ссылки" check: the
+program of each entry is found, executable and not a batch file.
 
 ## Log
 

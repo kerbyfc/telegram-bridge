@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -78,6 +80,11 @@ func NewLinkResolver(where, link string, command []string, timeout time.Duration
 		return none, err
 	}
 
+	err = CheckProgram(program)
+	if err != nil {
+		return none, err
+	}
+
 	args := append([]string{program}, command[1:]...)
 
 	return LinkResolver{Where: whereRE, Link: linkRE, Command: args, Timeout: timeout}, nil
@@ -128,6 +135,30 @@ func (c *Config) parseLinkResolvers() error {
 		}
 
 		c.LinkResolvers = append(c.LinkResolvers, resolver)
+	}
+
+	return nil
+}
+
+// CheckProgram отказывает пакетным файлам Windows (`.cmd`, `.bat`) — и названным прямо, и
+// найденным поиском по `PATH` и `PATHEXT`. Их исполняет `cmd.exe`, который разбирает аргументы
+// заново: `&` в ссылке рвёт команду, а ссылка вида `x&calc` запускает чужую программу. Отказ одинаков
+// на всех площадках: один файл настроек значит одно и то же везде.
+func CheckProgram(program string) error {
+	names := []string{program}
+
+	found, err := exec.LookPath(program)
+	if err == nil {
+		names = append(names, found)
+	}
+
+	for _, name := range names {
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".cmd", ".bat":
+			return fmt.Errorf("%w: `%s`: программа %q — пакетный файл Windows: его исполняет cmd.exe, "+
+				"который разбирает ссылку заново, и `&` в ней становится второй командой; назови исполняемый файл",
+				ErrBadConfig, LinkKey, name)
+		}
 	}
 
 	return nil

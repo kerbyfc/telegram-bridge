@@ -66,11 +66,31 @@ type Core struct {
 	// хоронила бы разом все живые сессии.
 	readyAt time.Time
 
+	// resolveCtx живёт, пока служба не остановлена: от него запускаются команды разворота ссылок,
+	// и остановка снимает их вместе с потомками. resolving считает горутины разворота, closed
+	// запрещает новые: остановка дожидается всех, пока журнал ещё открыт.
+	resolveCtx  context.Context //nolint:containedctx // срок жизни службы, а не запроса
+	resolveStop context.CancelFunc
+	resolving   sync.WaitGroup
+	closed      bool
+
 	topics   *store.Topics
 	sessions map[string]*Session
 	updates  *store.Updates
 	nextSeq  uint64
 	nextConn uint64
+}
+
+// Close останавливает разворот ссылок: команды снимаются вместе с потомками, их вывод в тему
+// уже не идёт, а каждая брошенная ссылка оставляет строку журнала `link-dropped`. Возвращается,
+// когда горутин разворота не осталось, поэтому журнал закрывается только после неё.
+func (c *Core) Close() {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+
+	c.resolveStop()
+	c.resolving.Wait()
 }
 
 // Ready отмечает момент, когда служба начала принимать соединения.
@@ -202,22 +222,28 @@ func New(cfg *config.Config, api botapi.API, st *store.Store, jrnl *store.Journa
 		return nil, fmt.Errorf("смещение опроса не прочитано: %w", err)
 	}
 
+	resolveCtx, resolveStop := context.WithCancel(context.Background())
+
 	core := &Core{
-		mu:        sync.Mutex{},
-		topicMu:   sync.Mutex{},
-		cfg:       cfg,
-		api:       api,
-		store:     st,
-		jrnl:      jrnl,
-		status:    statusline.New(cfg.Statusline()),
-		startedAt: time.Now(),
-		poll:      pollResult{At: time.Time{}, OK: false, Code: "", Text: ""},
-		readyAt:   time.Now(),
-		topics:    topics,
-		sessions:  make(map[string]*Session, len(bindings)),
-		updates:   updates,
-		nextSeq:   1,
-		nextConn:  1,
+		resolveCtx:  resolveCtx,
+		resolveStop: resolveStop,
+		resolving:   sync.WaitGroup{},
+		closed:      false,
+		mu:          sync.Mutex{},
+		topicMu:     sync.Mutex{},
+		cfg:         cfg,
+		api:         api,
+		store:       st,
+		jrnl:        jrnl,
+		status:      statusline.New(cfg.Statusline()),
+		startedAt:   time.Now(),
+		poll:        pollResult{At: time.Time{}, OK: false, Code: "", Text: ""},
+		readyAt:     time.Now(),
+		topics:      topics,
+		sessions:    make(map[string]*Session, len(bindings)),
+		updates:     updates,
+		nextSeq:     1,
+		nextConn:    1,
 	}
 
 	for _, binding := range bindings {
@@ -227,6 +253,8 @@ func New(cfg *config.Config, api botapi.API, st *store.Store, jrnl *store.Journa
 	for _, rec := range records {
 		sess, ok := core.sessions[rec.Session]
 		if !ok {
+			resolveStop()
+
 			return nil, errOrphanRecord(rec.Session, rec.ID)
 		}
 

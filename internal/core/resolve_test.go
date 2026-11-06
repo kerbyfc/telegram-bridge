@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kerbyfc/telegram-bridge/internal/botapi"
 	"github.com/kerbyfc/telegram-bridge/internal/config"
 	"github.com/kerbyfc/telegram-bridge/internal/core"
 	"github.com/kerbyfc/telegram-bridge/internal/protocol"
@@ -215,4 +216,143 @@ func waitJournal(t *testing.T, rig *rig, event string) {
 
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// TestВыводМедленнойКомандыДоСледующейРеплики: команда первой реплики думает, вторая реплика
+// приходит раньше её вывода — в теме всё равно реплика, её вывод, следующая реплика.
+func TestВыводМедленнойКомандыДоСледующейРеплики(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	rig.withResolver(resolvetest.ModeSlow, 10*time.Second)
+	conn, on := rig.mod("s1", topicAlpha)
+
+	rig.reply(conn, "needs input: [а](x://один)")
+	rig.reply(conn, "следующая")
+
+	texts := rig.waitTexts(on.TopicID, 3)
+	want := []string{"needs input: [а](x://один)", "развёрнуто x://один\nвторая строка", "следующая"}
+
+	if !slices.Equal(texts, want) {
+		t.Fatalf("порядок темы не тот: %q", texts)
+	}
+}
+
+// TestSayИВопросПослеВыводаРазворота: сказанное и вопрос с вариантами встают после вывода
+// разворота прошлой реплики, а не между репликой и выводом.
+func TestSayИВопросПослеВыводаРазворота(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	rig.withResolver(resolvetest.ModeSlow, 10*time.Second)
+	conn, on := rig.mod("s1", topicAlpha)
+
+	rig.reply(conn, "needs input: [а](x://один)")
+
+	say := rig.req(protocol.OpSay)
+	say.Kind = string(protocol.SayMessage)
+	say.Text = "сказано"
+
+	if resp := rig.do(conn, say); !resp.OK {
+		t.Fatalf("say отказал: %+v", resp.Error)
+	}
+
+	rig.reply(conn, "needs input: [б](x://два)")
+
+	ask := rig.req(protocol.OpQuestionAsk)
+	ask.Question = "вопрос"
+
+	if resp := rig.do(conn, ask); !resp.OK {
+		t.Fatalf("question.ask отказал: %+v", resp.Error)
+	}
+
+	texts := rig.waitTexts(on.TopicID, 6)
+	want := []string{
+		"needs input: [а](x://один)", "развёрнуто x://один\nвторая строка", "сказано",
+		"needs input: [б](x://два)", "развёрнуто x://два\nвторая строка", "вопрос",
+	}
+
+	if !slices.Equal(texts, want) {
+		t.Fatalf("порядок темы не тот: %q", texts)
+	}
+}
+
+// TestОтказОтправкиРепликиСнимаетКоманду: реплика в тему не легла — команда снята, и ни вывода,
+// ни строки отказа в теме нет.
+func TestОтказОтправкиРепликиСнимаетКоманду(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	rig.withResolver(resolvetest.ModeSleep, time.Minute)
+	conn, on := rig.mod("s1", topicAlpha)
+
+	rig.api.fail(methodSendMessage, botapi.Refuse(protocol.CodeTelegramRefused, "отказ"))
+
+	req := rig.req(protocol.OpAgentMessage)
+	req.Text = "needs input: [а](x://один)"
+
+	if resp := rig.do(conn, req); resp.OK {
+		t.Fatalf("реплика при отказе платформы прошла: %+v", resp)
+	}
+
+	idle := make(chan struct{})
+
+	go func() {
+		core.WaitResolving(rig.core)
+		close(idle)
+	}()
+
+	select {
+	case <-idle:
+	case <-time.After(5 * time.Second):
+		t.Fatal("команда не снята после отказа отправки реплики")
+	}
+
+	if texts := rig.api.texts(on.TopicID)[1:]; len(texts) != 0 {
+		t.Fatalf("в теме что-то легло: %q", texts)
+	}
+}
+
+// TestОтказОтправкиВыводаВЖурнале: вывод не отправился — строка журнала `link-send-failed`.
+func TestОтказОтправкиВыводаВЖурнале(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	rig.withResolver(resolvetest.ModeSlow, 10*time.Second)
+	conn, _ := rig.mod("s1", topicAlpha)
+
+	rig.reply(conn, "needs input: [а](x://один)")
+	rig.api.fail(methodSendMessage, botapi.Refuse(protocol.CodeTelegramRefused, "отказ"))
+
+	waitJournal(t, rig, "link-send-failed")
+}
+
+// TestОстановкаСлужбыБросаетРазворот: остановка снимает команды, вывод в тему не идёт, а каждая
+// брошенная ссылка оставляет строку журнала `link-dropped`. Новая реплика после остановки команд
+// не запускает.
+func TestОстановкаСлужбыБросаетРазворот(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	rig.withResolver(resolvetest.ModeSleep, time.Minute)
+	conn, on := rig.mod("s1", topicAlpha)
+
+	rig.reply(conn, "needs input: [а](x://один)")
+
+	started := time.Now()
+
+	rig.core.Close()
+
+	if spent := time.Since(started); spent > 5*time.Second {
+		t.Fatalf("остановка ждала команду: %s", spent)
+	}
+
+	waitJournal(t, rig, "link-dropped")
+
+	if texts := rig.api.texts(on.TopicID)[1:]; len(texts) != 1 {
+		t.Fatalf("после остановки в тему легло лишнее: %q", texts)
+	}
+
+	rig.reply(conn, "needs input: [б](x://два)")
+	core.WaitResolving(rig.core)
 }

@@ -164,3 +164,62 @@ func TestRunСрок(t *testing.T) {
 		t.Fatalf("срок не удержан: %s", spent)
 	}
 }
+
+// TestFindПустоеСовпадениеНеСсылка: пустое совпадение `link` ссылкой не считается, и команда на
+// него не зовётся.
+func TestFindПустоеСовпадениеНеСсылка(t *testing.T) {
+	t.Parallel()
+
+	res := resolver(t, `\[\[(.*?)\]\]`, `x*`, resolvetest.Command(resolvetest.ModePrint, "{link}"), time.Second)
+
+	got := links(resolve.Find("[[]] [[abc]] [[xx]]", []config.LinkResolver{res}))
+	if strings.Join(got, ",") != "xx" {
+		t.Fatalf("пустое совпадение взято ссылкой: %q", got)
+	}
+}
+
+// TestRunПределВывода: вывод больше предела снимает команду сразу, не дожидаясь срока, и
+// причина называет предел.
+func TestRunПределВывода(t *testing.T) {
+	t.Parallel()
+
+	res := resolver(t, `.*`, `.*`, resolvetest.Command(resolvetest.ModeFlood, "{link}"), time.Minute)
+	started := time.Now()
+
+	_, err := resolve.Run(context.Background(), res, "x")
+	if err == nil || err.Error() != "вывод больше предела 1048576 байт" {
+		t.Fatalf("отказ не тот: %v", err)
+	}
+
+	if spent := time.Since(started); spent > 10*time.Second {
+		t.Fatalf("предел не снял команду: %s", spent)
+	}
+}
+
+// TestRunПотомокДержитВывод: команда вышла, а поток вывода держит её потомок — отказ с понятной
+// причиной, а не неполный вывод.
+func TestRunПотомокДержитВывод(t *testing.T) {
+	t.Parallel()
+
+	res := resolver(t, `.*`, `.*`, resolvetest.Command(resolvetest.ModeOrphan, "{link}"), time.Minute)
+
+	_, err := resolve.Run(context.Background(), res, "x")
+	if err == nil || err.Error() != "потомок команды держит вывод открытым" {
+		t.Fatalf("отказ не тот: %v", err)
+	}
+}
+
+// TestRunОтмена: отмена контекста звонящего снимает команду до срока.
+func TestRunОтмена(t *testing.T) {
+	t.Parallel()
+
+	res := resolver(t, `.*`, `.*`, resolvetest.Command(resolvetest.ModeSleep, "{link}"), time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err := resolve.Run(ctx, res, "x")
+	if err == nil || err.Error() != "разворот отменён" {
+		t.Fatalf("отказ не тот: %v", err)
+	}
+}

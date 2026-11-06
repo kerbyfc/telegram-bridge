@@ -111,6 +111,10 @@ func serve(ctx context.Context, vip *viper.Viper, service bool) error {
 		return exitError{ExitFailed, err.Error()}
 	}
 
+	// Разворот ссылок останавливается раньше, чем закрывается журнал: брошенная ссылка оставляет в
+	// нём строку.
+	defer engine.Close()
+
 	srv, err := server.Listen(ctx, cfg.Endpoint(), engine)
 	if err != nil {
 		return exitError{ExitFailed, err.Error()}

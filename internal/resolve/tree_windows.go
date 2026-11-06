@@ -3,6 +3,7 @@
 package resolve
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"syscall"
@@ -17,7 +18,9 @@ type tree struct {
 }
 
 // newTree заводит объект задания, убивающий все процессы при закрытии, и учит отмену
-// завершать задание, а не одну команду. Окна консоли команда не открывает: служба идёт без него.
+// завершать задание, а не одну команду. Команда стартует приостановленной: в задание она попадает
+// до первой своей инструкции, и ни один потомок мимо задания не рождается. Окна консоли команда
+// не открывает: служба идёт без него.
 func newTree(cmd *exec.Cmd) (*tree, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -35,7 +38,8 @@ func newTree(cmd *exec.Cmd) (*tree, error) {
 		return nil, fmt.Errorf("объект задания не настроен: %w", err)
 	}
 
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW} //nolint:exhaustruct // нужен один флаг
+	//nolint:exhaustruct // нужны одни флаги создания
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW}
 	cmd.Cancel = func() error {
 		return windows.TerminateJobObject(job, 1)
 	}
@@ -43,9 +47,12 @@ func newTree(cmd *exec.Cmd) (*tree, error) {
 	return &tree{job: job}, nil
 }
 
-// attach кладёт запущенную команду в задание: её потомки наследуют его сами.
+// attach кладёт приостановленную команду в задание и пускает её главный поток: потомки команды
+// наследуют задание сами.
 func (t *tree) attach(cmd *exec.Cmd) error {
-	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
+	pid := uint32(cmd.Process.Pid)
+
+	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, pid)
 	if err != nil {
 		return fmt.Errorf("процесс команды не открыт: %w", err)
 	}
@@ -54,6 +61,60 @@ func (t *tree) attach(cmd *exec.Cmd) error {
 	err = windows.AssignProcessToJobObject(t.job, proc)
 	if err != nil {
 		return fmt.Errorf("команда не положена в задание: %w", err)
+	}
+
+	return resumeProcess(pid)
+}
+
+// resumeProcess пускает потоки приостановленного процесса. Поток у только что созданного
+// процесса один — главный; его номер даёт снимок потоков системы.
+func resumeProcess(pid uint32) error {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return fmt.Errorf("снимок потоков не снят: %w", err)
+	}
+	defer windows.CloseHandle(snap) //nolint:errcheck // закрытие дескриптора исхода не меняет
+
+	entry := windows.ThreadEntry32{} //nolint:exhaustruct // заполняет система
+	entry.Size = uint32(unsafe.Sizeof(entry))
+
+	resumed := 0
+
+	for err = windows.Thread32First(snap, &entry); err == nil; err = windows.Thread32Next(snap, &entry) {
+		if entry.OwnerProcessID != pid {
+			continue
+		}
+
+		err = resumeThread(entry.ThreadID)
+		if err != nil {
+			return err
+		}
+
+		resumed++
+	}
+
+	if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+		return fmt.Errorf("потоки команды не перечислены: %w", err)
+	}
+
+	if resumed == 0 {
+		return errors.New("у команды не нашлось потока")
+	}
+
+	return nil
+}
+
+// resumeThread пускает приостановленный поток.
+func resumeThread(threadID uint32) error {
+	thread, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, threadID)
+	if err != nil {
+		return fmt.Errorf("поток команды не открыт: %w", err)
+	}
+	defer windows.CloseHandle(thread) //nolint:errcheck // закрытие дескриптора исхода не меняет
+
+	_, err = windows.ResumeThread(thread)
+	if err != nil {
+		return fmt.Errorf("поток команды не пущен: %w", err)
 	}
 
 	return nil

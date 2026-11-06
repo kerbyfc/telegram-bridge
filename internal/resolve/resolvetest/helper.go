@@ -28,7 +28,16 @@ const (
 	ModeEmpty = "empty"
 	// ModeBadUTF8 выводит байты не в UTF-8.
 	ModeBadUTF8 = "bad-utf8"
+	// ModeSlow спит SlowPause и печатает ссылку, как ModePrint.
+	ModeSlow = "slow"
+	// ModeFlood пишет вывод без конца.
+	ModeFlood = "flood"
+	// ModeOrphan печатает ссылку и выходит, оставив потомка, который держит поток вывода.
+	ModeOrphan = "orphan"
 )
+
+// SlowPause — сколько думает команда режима ModeSlow.
+const SlowPause = 300 * time.Millisecond
 
 // FailExit — код выхода режима ModeFail.
 const FailExit = 3
@@ -69,6 +78,30 @@ func run(mode string, args []string) int {
 		_ = os.WriteFile(args[0], []byte(strconv.Itoa(child.Process.Pid)), 0o600)
 
 		time.Sleep(time.Minute)
+	case ModeSlow:
+		time.Sleep(SlowPause)
+		fmt.Fprintf(os.Stdout, "развёрнуто %s\r\nвторая строка\r\n", args[0])
+	case ModeFlood:
+		chunk := make([]byte, 64<<10)
+		for i := range chunk {
+			chunk[i] = 'a'
+		}
+
+		for {
+			_, err := os.Stdout.Write(chunk)
+			if err != nil {
+				return 1
+			}
+		}
+	case ModeOrphan:
+		child := exec.Command(os.Args[0], marker, ModeSleep) //nolint:gosec,noctx // тестовая команда
+		child.Stdout = os.Stdout
+
+		if child.Start() != nil {
+			return 1
+		}
+
+		fmt.Fprintf(os.Stdout, "развёрнуто %s\n", args[0])
 	case ModeEmpty:
 	case ModeBadUTF8:
 		_, _ = os.Stdout.Write([]byte{0xff, 0xfe, '\n'})

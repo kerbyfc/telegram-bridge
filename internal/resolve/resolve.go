@@ -68,6 +68,11 @@ func Find(text string, resolvers []config.LinkResolver) []Hit {
 			}
 
 			for _, link := range resolver.Link.FindAllStringIndex(text[start:end], -1) {
+				// Пустое совпадение ссылкой не считается: команде нечего разворачивать.
+				if link[0] == link[1] {
+					continue
+				}
+
 				hits = append(hits, Hit{
 					Resolver: resolver,
 					Link:     text[start+link[0] : start+link[1]],
@@ -85,9 +90,9 @@ func Find(text string, resolvers []config.LinkResolver) []Hit {
 // Run запускает команду записи на ссылку и отдаёт её вывод. Оболочки нет: программа и аргументы
 // идут как названы, ссылка подставляется внутрь аргумента и остаётся в нём. Отказ — ненулевой
 // код, вышедший срок, пустой вывод, вывод не в UTF-8 или больше предела; потомки команды по
-// сроку убиваются вместе с ней.
+// сроку, по пределу вывода и по отмене ctx убиваются вместе с ней.
 func Run(ctx context.Context, resolver config.LinkResolver, link string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, resolver.Timeout)
+	ctx, cancel := context.WithTimeoutCause(ctx, resolver.Timeout, errOwnDeadline)
 	defer cancel()
 
 	args := make([]string, 0, len(resolver.Command)-1)
@@ -98,10 +103,11 @@ func Run(ctx context.Context, resolver config.LinkResolver, link string) (string
 	cmd := exec.CommandContext(ctx, resolver.Command[0], args...)
 	cmd.WaitDelay = waitDelay
 
-	var stdout, stderr bytes.Buffer
+	stdout := &limitWriter{buf: bytes.Buffer{}, limit: OutputLimit, over: false, cancel: cancel}
+	stderr := &tailWriter{buf: nil}
 
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	group, err := newTree(cmd)
 	if err != nil {
@@ -124,24 +130,69 @@ func Run(ctx context.Context, resolver config.LinkResolver, link string) (string
 
 	err = cmd.Wait()
 
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	switch {
+	case stdout.over:
+		return "", failed("вывод больше предела %d байт", OutputLimit)
+	case errors.Is(context.Cause(ctx), errOwnDeadline):
 		return "", failed("срок %s вышел", resolver.Timeout)
+	case ctx.Err() != nil:
+		return "", failed("разворот отменён")
+	case errors.Is(err, exec.ErrWaitDelay):
+		// Команда вышла сама, а поток вывода держит открытым её потомок: дождаться конца вывода
+		// нельзя, и неполный вывод за весь ответ не выдаётся.
+		return "", failed("потомок команды держит вывод открытым")
+	case err != nil:
+		return "", failed("%s%s", exitReason(err), tail(stderr.buf))
 	}
 
-	if err != nil {
-		return "", failed("%s%s", exitReason(err), tail(stderr.Bytes()))
+	return output(stdout.buf.Bytes())
+}
+
+// limitWriter копит вывод команды до предела. Превышение снимает команду сразу, а не читает
+// поток до конца в память.
+type limitWriter struct {
+	buf    bytes.Buffer
+	limit  int
+	over   bool
+	cancel context.CancelFunc
+}
+
+// errOwnDeadline — вышел срок самой записи, а не отменил звонящий.
+var errOwnDeadline = errors.New("срок записи вышел")
+
+// errOverLimit — вывод команды перерос предел.
+var errOverLimit = errors.New("вывод больше предела")
+
+// Write копит кусок вывода или снимает команду, если кусок перерастает предел.
+func (w *limitWriter) Write(chunk []byte) (int, error) {
+	if w.buf.Len()+len(chunk) > w.limit {
+		w.over = true
+		w.cancel()
+
+		return 0, errOverLimit
 	}
 
-	return output(stdout.Bytes())
+	return w.buf.Write(chunk) //nolint:wrapcheck // запись в память не отказывает
+}
+
+// tailWriter держит последние байты потока ошибок: в причину отказа идёт только хвост.
+type tailWriter struct {
+	buf []byte
+}
+
+// Write дописывает кусок и срезает начало сверх хвоста.
+func (w *tailWriter) Write(chunk []byte) (int, error) {
+	w.buf = append(w.buf, chunk...)
+	if len(w.buf) > 4*stderrTail {
+		w.buf = w.buf[len(w.buf)-4*stderrTail:]
+	}
+
+	return len(chunk), nil
 }
 
 // output проверяет вывод команды и приводит переводы строк к `\n`: команда на Windows пишет
 // `\r\n`, а в теме лишний `\r` виден.
 func output(raw []byte) (string, error) {
-	if len(raw) > OutputLimit {
-		return "", failed("вывод %d байт больше предела %d", len(raw), OutputLimit)
-	}
-
 	if !utf8.Valid(raw) {
 		return "", failed("вывод не в UTF-8")
 	}

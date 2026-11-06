@@ -41,26 +41,15 @@ func (c *Core) agentMessage(ctx context.Context, conn *Conn, req protocol.Reques
 		return *fail
 	}
 
-	jobs, cancel := c.startResolving(ctx, req.Text)
+	work := c.startResolving(sess, req.Text)
 
-	// Реплики сессии встают в тему цепочкой: эта ждёт, пока ляжет всё от прошлой, а следующая —
-	// её саму и вывод разворота её ссылок.
-	done := make(chan struct{})
-
-	c.mu.Lock()
-	prev := sess.replied
-	sess.replied = done
-	c.mu.Unlock()
-
-	// Ожидание конечно: команды прошлой реплики ограничены своими сроками, отправка — сроками
-	// Bot API. Отмена запроса его не прерывает: дописанная реплика в тему уходит всё равно.
-	if prev != nil {
-		<-prev
-	}
+	// Сообщения сессии встают в тему цепочкой: реплика ждёт, пока ляжет всё от прошлого, а
+	// следующее сообщение — её саму и вывод разворота её ссылок.
+	done := c.enterChain(sess)
 
 	resp := c.sendReply(ctx, conn, sess, req)
-	if !resp.OK || len(jobs) == 0 {
-		cancel()
+	if !resp.OK || work == nil {
+		c.abandon(work)
 		close(done)
 
 		return resp
@@ -68,7 +57,7 @@ func (c *Core) agentMessage(ctx context.Context, conn *Conn, req protocol.Reques
 
 	// Вывод разворота отправляется уже без звонящего: ход клиента ответа на реплику не ждёт
 	// дольше, чем уходит сама реплика.
-	go c.deliverResolved(context.WithoutCancel(ctx), sess, jobs, cancel, done)
+	go c.deliverResolved(sess, work, done)
 
 	return resp
 }
@@ -156,19 +145,24 @@ func (c *Core) say(ctx context.Context, conn *Conn, req protocol.Request) protoc
 		return protocol.Fail(req.RID, protocol.CodeBadRequest, "негодный `kind` у `say`")
 	}
 
-	c.topicMu.Lock()
-	defer c.topicMu.Unlock()
-
 	c.mu.Lock()
 	sess := c.session(sessionOf(conn, req))
+	bound := sess != nil && sess.disk.TopicID != 0
+	c.mu.Unlock()
 
-	if sess == nil || sess.disk.TopicID == 0 {
-		c.mu.Unlock()
+	if !bound {
+		c.topicMu.Lock()
+		defer c.topicMu.Unlock()
 
 		return c.sayLoose(ctx, req)
 	}
 
-	c.mu.Unlock()
+	// Сказанное встаёт в тему после вывода разворота прошлой реплики, а не между ними.
+	done := c.enterChain(sess)
+	defer close(done)
+
+	c.topicMu.Lock()
+	defer c.topicMu.Unlock()
 
 	ids, err := c.sendChunks(ctx, sess, req.Text)
 	if err != nil {

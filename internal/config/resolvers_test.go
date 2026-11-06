@@ -74,6 +74,8 @@ func TestLinkResolversНегодные(t *testing.T) {
 		"{link} программой": {`where: 'a', link: 'x', command: ["{link}"], timeout: 1s`, "имени программы"},
 		"нет срока":         {`where: 'a', link: 'x', command: [p, "{link}"]`, "нет `timeout`"},
 		"битый срок":        {`where: 'a', link: 'x', command: [p, "{link}"], timeout: скоро`, "не разобран"},
+		"пакетный .cmd":     {`where: 'a', link: 'x', command: ['C:\tools\show.cmd', "{link}"], timeout: 1s`, "пакетный файл"},
+		"пакетный .BAT":     {`where: 'a', link: 'x', command: ["show.BAT", "{link}"], timeout: 1s`, "пакетный файл"},
 		"нулевой срок":      {`where: 'a', link: 'x', command: [p, "{link}"], timeout: 0s`, "нет срока"},
 	}
 

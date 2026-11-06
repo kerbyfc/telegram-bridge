@@ -254,6 +254,8 @@ func (r *rig) reopen() {
 		r.t.Fatalf("служба не поднялась на прежнем состоянии: %v", err)
 	}
 
+	r.t.Cleanup(engine.Close)
+
 	r.core = engine
 }
 
@@ -353,6 +355,8 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatalf("ядро не поднялось: %v", err)
 	}
+
+	t.Cleanup(engine.Close)
 
 	return &rig{t: t, core: engine, api: api, cfg: cfg, store: st, jrnl: jrnl, root: root}
 }

@@ -1,9 +1,9 @@
 package core
 
 import (
-	"context"
 	"time"
 
+	"context"
 	"github.com/kerbyfc/telegram-bridge/internal/resolve"
 	"github.com/kerbyfc/telegram-bridge/internal/store"
 )
@@ -24,40 +24,83 @@ type resolved struct {
 	err  error
 }
 
-// startResolving находит ссылки реплики по записям настроек и сразу запускает их команды: пока
-// уходит сама реплика, команды уже работают. Отменой звонящий снимает команды, чей вывод
-// больше не нужен.
-func (c *Core) startResolving(ctx context.Context, text string) ([]resolution, context.CancelFunc) {
-	hits := resolve.Find(text, c.cfg.LinkResolvers)
+// batch — развороты ссылок одной реплики. Место отправщика в счёте горутин занято заранее: его
+// забирает либо отправка вывода, либо отказ от неё.
+type batch struct {
+	jobs   []resolution
+	cancel context.CancelFunc
+}
 
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	jobs := make([]resolution, 0, len(hits))
+// startResolving находит ссылки реплики по записям настроек и сразу запускает их команды: пока
+// уходит сама реплика, команды уже работают. Остановленная служба команд не запускает, а каждую
+// ссылку называет строкой журнала `link-dropped`.
+func (c *Core) startResolving(sess *Session, text string) *batch {
+	hits := resolve.Find(text, c.cfg.LinkResolvers)
+	if len(hits) == 0 {
+		return nil
+	}
+
+	c.mu.Lock()
+
+	if c.closed {
+		c.mu.Unlock()
+
+		for _, hit := range hits {
+			c.journalResolve(sess, "link-dropped", hit.Link+": служба остановлена")
+		}
+
+		return nil
+	}
+
+	c.resolving.Add(len(hits) + 1)
+	c.mu.Unlock()
+
+	runCtx, cancel := context.WithCancel(c.resolveCtx)
+	work := &batch{jobs: make([]resolution, 0, len(hits)), cancel: cancel}
 
 	for _, hit := range hits {
 		job := resolution{link: hit.Link, out: make(chan resolved, 1)}
-		jobs = append(jobs, job)
+		work.jobs = append(work.jobs, job)
 
 		go func() {
+			defer c.resolving.Done()
+
 			out, err := resolve.Run(runCtx, hit.Resolver, hit.Link)
 			job.out <- resolved{text: out, err: err}
 		}()
 	}
 
-	return jobs, cancel
+	return work
+}
+
+// abandon снимает команды реплики, вывод которых ставить некуда: реплика в тему не легла.
+func (c *Core) abandon(work *batch) {
+	if work == nil {
+		return
+	}
+
+	work.cancel()
+	c.resolving.Done()
 }
 
 // deliverResolved отправляет вывод разворота следом за репликой, по порядку ссылок в тексте,
-// тем же резаком по пределу Telegram. Упавшая команда даёт строку отказа с причиной. Конец —
-// закрытие `done`: следующая реплика сессии ждёт его, чтобы не встать между репликой и её
-// выводом.
-func (c *Core) deliverResolved(
-	ctx context.Context, sess *Session, jobs []resolution, cancel context.CancelFunc, done chan struct{},
-) {
+// тем же резаком по пределу Telegram. Упавшая команда даёт строку отказа с причиной; остановка
+// службы — строку журнала `link-dropped` вместо сообщения. Конец — закрытие `done`: следующее
+// сообщение сессии ждёт его, чтобы не встать между репликой и её выводом.
+func (c *Core) deliverResolved(sess *Session, work *batch, done chan struct{}) {
+	defer c.resolving.Done()
 	defer close(done)
-	defer cancel()
+	defer work.cancel()
 
-	for _, job := range jobs {
+	for _, job := range work.jobs {
 		res := <-job.out
+
+		if c.resolveCtx.Err() != nil {
+			c.journalResolve(sess, "link-dropped", job.link+": служба остановлена")
+
+			continue
+		}
+
 		text := res.text
 
 		if res.err != nil {
@@ -66,13 +109,32 @@ func (c *Core) deliverResolved(
 		}
 
 		c.topicMu.Lock()
-		_, err := c.sendChunks(ctx, sess, text)
+		_, err := c.sendChunks(c.resolveCtx, sess, text)
 		c.topicMu.Unlock()
 
 		if err != nil {
 			c.journalResolve(sess, "link-send-failed", job.link+": "+err.Error())
 		}
 	}
+}
+
+// enterChain ставит сообщение сессии в очередь темы: ждёт, пока ляжет всё от прошлого —
+// реплика и вывод разворота её ссылок, — и отдаёт свой знак конца, который звонящий закрывает,
+// когда его сообщение легло. Ожидание конечно: команды ограничены своими сроками, отправка —
+// сроками Bot API. Отмена запроса его не прерывает: дописанное сообщение в тему уходит всё равно.
+func (c *Core) enterChain(sess *Session) chan struct{} {
+	done := make(chan struct{})
+
+	c.mu.Lock()
+	prev := sess.replied
+	sess.replied = done
+	c.mu.Unlock()
+
+	if prev != nil {
+		<-prev
+	}
+
+	return done
 }
 
 // journalResolve пишет строку журнала о развороте ссылки.
