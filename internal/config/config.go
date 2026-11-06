@@ -69,6 +69,8 @@ type Config struct {
 	RetryPausesRaw   []string      `mapstructure:"retry_pauses"`
 	TopicIconOn      string        `mapstructure:"topic_icon_on"`
 	TopicIconOff     string        `mapstructure:"topic_icon_off"`
+	LinkResolvers    []LinkResolver
+	LinkResolversRaw []linkResolverRaw `mapstructure:"link_resolvers"`
 
 	// statuslineNamed — ключ `statusline_root` назван в файле настроек. Установка по нему решает,
 	// дописывать ли корень, и уже названное владельцем значение не затирает.
@@ -213,6 +215,11 @@ func Load(path string) (*Config, error) {
 	}
 
 	err = cfg.expandPaths()
+	if err != nil {
+		return nil, err
+	}
+
+	err = cfg.parseLinkResolvers()
 	if err != nil {
 		return nil, err
 	}

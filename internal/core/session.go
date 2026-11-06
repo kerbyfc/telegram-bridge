@@ -64,6 +64,10 @@ type Session struct {
 	// хода не начинает вовсе.
 	turn     string
 	turnDone string
+
+	// replied закрывается, когда в теме лежит всё, что принесла последняя реплика: она сама и
+	// вывод разворота её ссылок. Следующая реплика ждёт его, чтобы вывод не уехал за чужую реплику.
+	replied chan struct{}
 }
 
 // state отдаёт живость сессии. Отсрочка возврата считается от позднейшего из двух моментов —
@@ -298,5 +302,6 @@ func newSession(disk store.Session) *Session {
 		typingStop:      nil,
 		turn:            "",
 		turnDone:        "",
+		replied:         nil,
 	}
 }

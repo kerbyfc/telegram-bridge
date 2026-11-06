@@ -108,6 +108,10 @@ func doctor(cmd *cobra.Command, vip *viper.Viper) error {
 		autostartCheck(cmd, vip, live[0].State == stateOK),
 	}
 
+	if len(cfg.LinkResolvers) > 0 {
+		checks = append(checks, resolversCheck(cfg))
+	}
+
 	checks = append(checks, live...)
 
 	named := text(cmd, flagSession)

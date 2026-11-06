@@ -331,7 +331,8 @@ telegram-bridge doctor --config ~/.dm-telegram-go/config.yaml --session <id>   #
 There are eight checks, each named by a line: settings (the token is parsed into a bot id, the group is
 a supergroup, the owner is named), topic icons (both are in Telegram's set), the state directory, the log with its generations and the process
 output, the autostart entry, the liveness of the service itself, the bot and the group, and session
-connections. The token, the group and the channel to Telegram are confirmed by the outcome of the last
+connections. With `link_resolvers` named, one more check says whether the program of each
+entry is found and executable. The token, the group and the channel to Telegram are confirmed by the outcome of the last
 poll — the only call the self-check makes itself is the one for the set of icons. No service — the check fails, and the last
 lines of **both** files are appended to the refusal: its own log and the process output where a panic
 goes (the autostart system writes it, and the log does not have it at all). The cause of a crash must be
@@ -422,6 +423,60 @@ OpenCode plugin takes the server event `session.text.ended`, which comes for a f
 carries it whole; thinking goes as `session.reasoning.*`, tool calls and their input as
 `session.tool.*`, and by the kind of event they never reach the topic. Sending a reply does not hold
 the turn: the notice goes without waiting, like the turn boundaries.
+
+## Link resolvers: the text behind a link in the reply
+
+A reply may carry a link whose content the owner wants to read right in the topic: an issue, a
+note, a ticket. The `link_resolvers` key of `config.yaml` names where such links live in a reply and
+which command turns a link into text. The service knows nothing about the links themselves: one
+rule, everything specific is in the entry.
+
+```yaml
+link_resolvers:
+  - where: '(?m)^see also:(.*)$'      # place in the reply; a group narrows the search to it
+    link: 'https://tracker\.example\.com/[^\s)]+'
+    command: ["/usr/local/bin/tracker", "show", "--plain", "{link}"]
+    timeout: 10s
+```
+
+On Windows the program is a path to the `.exe`; in single quotes YAML takes backslashes as they are,
+in double quotes each one is doubled:
+
+```yaml
+link_resolvers:
+  - where: '\[\[(.+?)\]\]'
+    link: '.+'
+    command: ['C:\Users\me\bin\tracker.exe', "show", "--plain", "{link}"]
+    # the same in double quotes: ["C:\\Users\\me\\bin\\tracker.exe", "show", "--plain", "{link}"]
+    timeout: 10s
+```
+
+A path with spaces needs nothing extra: the program is one array item, no shell splits it. The
+output must be UTF-8 on Windows too: a command printing in the console code page is refused with
+"вывод не в UTF-8", not shown garbled.
+
+- `where` is a Go regular expression (RE2) over the whole finished reply. With a group the link is
+  searched only inside it, without one inside the whole match; more than one group is an error.
+  Modes are flags of the expression itself: `(?m)` for a line, `(?s)` for text spanning lines.
+- `link` is a Go regular expression for a link inside each place.
+- `command` is a program and its arguments, run without a shell; `{link}` inside an argument is
+  replaced by the link, which stays inside that one argument. A leading `~` in the program is
+  expanded.
+- `timeout` is required; on expiry the command is killed with all its children.
+
+The command contract: the link comes as an argument, the ready text goes to stdout in UTF-8, a
+failure is a non-zero exit code. `\r\n` becomes `\n`. In the topic the reply goes as it is, then the
+output of each link as a separate message in the order of the links in the text, cut at Telegram's
+limit. The answer to the reply does not wait for the commands; the next reply of the same session
+waits for the previous one's output so it does not get in between. A failed command, an expired
+timeout, empty output, output that is not UTF-8 or larger than 1 MiB gives a line
+`ссылка не развёрнута: <link>: <reason>` after the reply and a `link-unresolved` log line. A link
+outside a place is not resolved. No key — nothing changes.
+
+A broken entry (an invalid expression, more than one group in `where`, an empty command, `{link}`
+in the program or in no argument at all, a missing or invalid `timeout`) is an error loading the
+settings: the service does not start. `doctor` adds a "ссылки" check: the program of each entry is
+found and executable.
 
 ## Log
 

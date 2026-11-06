@@ -25,7 +25,9 @@ const typingLimit = 5 * time.Minute
 // пути нет: сообщение темы появляется дописанным и больше не меняется.
 //
 // Вывод инструментов в этот поток не попадает, как не попадают его вход и мысли: отделяет их тот,
-// кто их видит, то есть средство сессии; служба текст не разбирает и не угадывает.
+// кто их видит, то есть средство сессии; служба текст не разбирает и не угадывает. Разбор один и
+// чужой службе: места и ссылки по записям `link_resolvers` настроек. Вывод их команд уходит
+// отдельными сообщениями после реплики, а ответ на реплику их не ждёт.
 //
 // Нарезка остаётся одна: реплика длиннее предела сообщения Telegram режется по пределу тем же
 // резаком, которым служба режет всякий длинный текст.
@@ -39,6 +41,42 @@ func (c *Core) agentMessage(ctx context.Context, conn *Conn, req protocol.Reques
 		return *fail
 	}
 
+	jobs, cancel := c.startResolving(ctx, req.Text)
+
+	// Реплики сессии встают в тему цепочкой: эта ждёт, пока ляжет всё от прошлой, а следующая —
+	// её саму и вывод разворота её ссылок.
+	done := make(chan struct{})
+
+	c.mu.Lock()
+	prev := sess.replied
+	sess.replied = done
+	c.mu.Unlock()
+
+	// Ожидание конечно: команды прошлой реплики ограничены своими сроками, отправка — сроками
+	// Bot API. Отмена запроса его не прерывает: дописанная реплика в тему уходит всё равно.
+	if prev != nil {
+		<-prev
+	}
+
+	resp := c.sendReply(ctx, conn, sess, req)
+	if !resp.OK || len(jobs) == 0 {
+		cancel()
+		close(done)
+
+		return resp
+	}
+
+	// Вывод разворота отправляется уже без звонящего: ход клиента ответа на реплику не ждёт
+	// дольше, чем уходит сама реплика.
+	go c.deliverResolved(context.WithoutCancel(ctx), sess, jobs, cancel, done)
+
+	return resp
+}
+
+// sendReply отправляет реплику в тему сессии под замком темы.
+func (c *Core) sendReply(
+	ctx context.Context, conn *Conn, sess *Session, req protocol.Request,
+) protocol.Response {
 	c.topicMu.Lock()
 	defer c.topicMu.Unlock()
 
