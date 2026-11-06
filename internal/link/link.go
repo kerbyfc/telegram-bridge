@@ -31,6 +31,13 @@ type Options struct {
 	// владелец о нём не слышит; дольше — средство сессии получает событие `absent` один раз на
 	// пропажу.
 	Absent time.Duration
+	// Steady — сколько соединение должно прожить, чтобы считаться вернувшимся: короче — служба
+	// падает сразу после приветствия, и это та же пропажа, а не новая. Прожив его, соединение
+	// говорит событие `steady`.
+	Steady time.Duration
+	// Hello — срок ответа на приветствие: служба, которая приняла соединение и молчит, — та же
+	// потеря связи, а не вечное ожидание.
+	Hello time.Duration
 	// StopFarewell — срок `bye` на остановке подкоманды: служба молчит — подкоманда всё равно
 	// выходит в этот срок, и выход клиента ею не висит.
 	StopFarewell time.Duration
@@ -50,7 +57,16 @@ type handoff struct {
 	// failure — отказ службы на подтверждении приёма. Соединение сессии при этом больше не её,
 	// и ждать на нём нечего: отказ кончает долгий запрос, а не ставит его на вечное ожидание.
 	failure error
+
+	// ack — подтверждение приёма, которое средство сессии дало, когда связи со службой не было:
+	// оно уходит службе первым кадром вернувшегося соединения, раньше долгого запроса, — иначе
+	// служба подала бы то же слово второй раз.
+	ack *Ack
 }
+
+// maxBacklog — сколько реплик агента подкоманда копит, пока связи со службой нет. Больше —
+// старейшая теряется, и средство сессии говорит об этом владельцу событием `undelivered`.
+const maxBacklog = 64
 
 // Link держит соединение сессии со службой и местный вход для средства сессии.
 type Link struct {
@@ -73,9 +89,17 @@ type Link struct {
 	leaving   chan struct{}
 	leaveOnce sync.Once
 
-	// lostAt — когда пропала связь со службой; пусто, пока соединение живо. Её и absent держит
-	// только цикл соединений `hold`, поэтому мьютекса у них нет.
+	// backlog — реплики агента, ждущие связи со службой, в порядке прихода; flushing — их
+	// отдаёт вернувшееся соединение, и новая реплика встаёт за ними, а не обгоняет их.
+	backlog  []string
+	flushing bool
+	kick     chan struct{}
+
+	// lostAt — когда пропала связь со службой; пусто, пока пропажи нет. upAt — когда открылось
+	// последнее соединение. Их и absent держит только цикл соединений `hold`, поэтому мьютекса у
+	// них нет.
 	lostAt time.Time
+	upAt   time.Time
 	// absent — о пропаже этой длины средству сессии уже сказано событием `absent`.
 	absent bool
 }
@@ -117,7 +141,13 @@ func (l *Link) Run(ctx context.Context) error {
 		cancel()
 	}()
 
-	return l.hold(runCtx)
+	go l.flusher(runCtx)
+
+	err = l.hold(runCtx)
+
+	l.abandon()
+
+	return err
 }
 
 // stopped решает, что значит остановка подкоманды извне. У Claude Code процесс клиента и есть
@@ -197,6 +227,17 @@ func (l *Link) hold(ctx context.Context) error {
 // не на каждую попытку: служба, которой нет минуту, иначе сыпала бы ими каждую паузу. Пропажа
 // дольше `Absent` — уже не штатный перезапуск, и средство сессии узнаёт о ней событием `absent`.
 func (l *Link) lose(err error) {
+	// Соединение, прожившее `Steady`, кончило прежнюю пропажу; короче — служба падает сразу после
+	// приветствия, и пропажа длится: иначе петля падений никогда не дошла бы до `absent`.
+	if !l.upAt.IsZero() {
+		if time.Since(l.upAt) >= l.opts.Steady {
+			l.lostAt = time.Time{}
+			l.absent = false
+		}
+
+		l.upAt = time.Time{}
+	}
+
 	if l.lostAt.IsZero() {
 		l.lostAt = time.Now()
 
@@ -221,16 +262,30 @@ func (l *Link) lose(err error) {
 	l.emit(Event{Event: EventAbsent, Text: text}) //nolint:exhaustruct // поля события задаёт его вид
 }
 
-// regain отмечает, что связь вернулась: следующая пропажа считается заново.
+// regain отмечает, что соединение открылось. Пропажа считается оконченной не здесь, а когда
+// соединение проживёт `Steady` (`lose` на следующей потере и событие `steady`).
 func (l *Link) regain() {
+	l.upAt = time.Now()
+
 	if l.lostAt.IsZero() {
 		return
 	}
 
-	l.note(fmt.Sprintf("соединение со службой вернулось через %d с", int(time.Since(l.lostAt).Seconds())))
+	l.note(fmt.Sprintf("соединение со службой открылось через %d с после потери", int(time.Since(l.lostAt).Seconds())))
+}
 
-	l.lostAt = time.Time{}
-	l.absent = false
+// steady говорит средству сессии, что соединение прожило `Steady`: связь вернулась всерьёз, и
+// сказанное владельцу о пропаже можно снять.
+func (l *Link) steady(ctx context.Context, client *Client) {
+	timer := time.NewTimer(l.opts.Steady)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		l.emit(Event{Event: EventSteady}) //nolint:exhaustruct // поля события задаёт его вид
+	case <-client.Done():
+	case <-ctx.Done():
+	}
 }
 
 // attach открывает одно соединение сессии: приветствие, затем единственный долгий запрос.
@@ -242,8 +297,15 @@ func (l *Link) attach(ctx context.Context) error {
 
 	defer client.Close()
 
-	resp, err := client.Call(ctx, l.hello())
+	greeted, cancel := context.WithTimeout(ctx, l.opts.Hello)
+	defer cancel()
+
+	resp, err := client.Call(greeted, l.hello())
 	if err != nil {
+		if ctx.Err() == nil && greeted.Err() != nil {
+			return fmt.Errorf("%w: служба не ответила на приветствие за %s", ErrLinkLost, l.opts.Hello)
+		}
+
 		return err
 	}
 
@@ -261,7 +323,55 @@ func (l *Link) attach(ctx context.Context) error {
 		TopicID: resp.TopicID, TopicName: resp.TopicName, Revived: resp.Revived,
 	})
 
+	go l.steady(ctx, client)
+
+	l.wake()
+
+	err = l.resume(ctx, client)
+	if err != nil {
+		return err
+	}
+
 	return l.pump(ctx, client)
+}
+
+// resume доводит доставку, выданную прежнему соединению: подтверждение, данное без связи, уходит
+// службе первым, а не данное ещё — ждётся. Долгий запрос идёт только после него: служба подала бы
+// то же слово второй раз, а мод подал бы его в сессию дважды.
+func (l *Link) resume(ctx context.Context, client *Client) error {
+	l.mu.Lock()
+	taken := l.pending
+	l.mu.Unlock()
+
+	if taken == nil {
+		return nil
+	}
+
+	l.mu.Lock()
+
+	ack := taken.ack
+
+	l.mu.Unlock()
+
+	if ack == nil {
+		return l.awaitAck(ctx, client, taken)
+	}
+
+	resp, err := client.Call(ctx, ackRequest(*ack))
+	if err != nil {
+		return err
+	}
+
+	if !resp.OK {
+		l.breakOff(taken, refusal(resp))
+
+		return taken.failure
+	}
+
+	l.note("подтверждение приёма " + ack.DeliveryID + " отдано службе после возврата связи")
+	l.settle(*ack, taken)
+
+	return nil
 }
 
 // pump ведёт доставку: долгий запрос, выдача средству сессии, подтверждение приёма и сразу
@@ -305,6 +415,12 @@ func (l *Link) hand(ctx context.Context, client *Client, resp protocol.Response)
 		Text: resp.Text, Provenance: resp.Provenance, Author: resp.Author, Topic: resp.Topic,
 	})
 
+	return l.awaitAck(ctx, client, taken)
+}
+
+// awaitAck ждёт подтверждения приёма выданной доставки. Пропало соединение — доставка остаётся
+// выданной: подтверждение мода дойдёт службе вернувшимся соединением (`resume`).
+func (l *Link) awaitAck(ctx context.Context, client *Client, taken *handoff) error {
 	select {
 	case <-taken.done:
 		return taken.failure
@@ -330,10 +446,17 @@ func (l *Link) confirm(ctx context.Context, ack Ack) (protocol.Response, error) 
 		return protocol.Response{}, err
 	}
 
-	resp, err := client.Call(ctx, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
-		Op: protocol.OpDeliveryAck, DeliveryID: ack.DeliveryID,
-		Outcome: ack.Outcome, Detail: ack.Detail,
-	})
+	// Связи нет — подтверждение не теряется: оно уйдёт службе первым кадром вернувшегося
+	// соединения, раньше долгого запроса.
+	if client == nil {
+		return l.postpone(ack, taken), nil
+	}
+
+	resp, err := client.Call(ctx, ackRequest(ack))
+	if errors.Is(err, ErrLinkLost) {
+		return l.postpone(ack, taken), nil
+	}
+
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -350,6 +473,22 @@ func (l *Link) confirm(ctx context.Context, ack Ack) (protocol.Response, error) 
 	l.settle(ack, taken)
 
 	return resp, nil
+}
+
+// postpone откладывает подтверждение приёма до возврата связи и отвечает средству сессии удачей:
+// подтверждение принято подкомандой и дойдёт до службы, а слово владельца не подастся дважды.
+func (l *Link) postpone(ack Ack, taken *handoff) protocol.Response {
+	l.mu.Lock()
+
+	if l.pending == taken {
+		taken.ack = &ack
+	}
+
+	l.mu.Unlock()
+
+	l.note("подтверждение приёма " + ack.DeliveryID + " уйдёт службе, когда связь вернётся")
+
+	return protocol.Ok("")
 }
 
 // farewell говорит службе, что сессия кончилась, и кончает подкоманду: соединение сессии больше
@@ -403,14 +542,14 @@ func (l *Link) adopt(client *Client) {
 	l.client = client
 }
 
-// release забывает кончившееся соединение вместе с выданной доставкой: подтверждать приём
-// некуда, и запись осталась в ящике — служба подаст её заново новому соединению.
+// release забывает кончившееся соединение. Выданная доставка остаётся: мод её уже подаёт, и его
+// подтверждение уйдёт службе вернувшимся соединением, а не потеряется — иначе служба подала бы то
+// же слово второй раз.
 func (l *Link) release() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.client = nil
-	l.pending = nil
 }
 
 // expect запоминает выданную доставку и отдаёт её, чтобы ждать подтверждения приёма.
@@ -425,14 +564,11 @@ func (l *Link) expect(id string) *handoff {
 	return taken
 }
 
-// handed находит соединение сессии и сверяет, что подтверждение пришло на выданную доставку.
+// handed сверяет, что подтверждение пришло на выданную доставку, и отдаёт соединение сессии; без
+// связи соединения нет, и подтверждение откладывается.
 func (l *Link) handed(id string) (*Client, *handoff, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	if l.client == nil {
-		return nil, nil, ErrNoLink
-	}
 
 	if l.pending == nil || l.pending.id != id {
 		return nil, nil, fmt.Errorf("%w: %s", ErrNotHanded, id)
@@ -579,6 +715,10 @@ func New(opts Options) *Link {
 		pending:   nil,
 		after:     "",
 		front:     "",
+		backlog:   nil,
+		flushing:  false,
+		kick:      make(chan struct{}, 1),
+		upAt:      time.Time{},
 		stop:      make(chan struct{}),
 		stopOnce:  sync.Once{},
 		leaving:   make(chan struct{}),
@@ -602,4 +742,12 @@ func refusal(resp protocol.Response) error {
 	}
 
 	return RefusedError{Code: resp.Error.Code, Text: resp.Error.Text, reason: reason}
+}
+
+// ackRequest собирает кадр подтверждения приёма.
+func ackRequest(ack Ack) protocol.Request {
+	return protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		Op: protocol.OpDeliveryAck, DeliveryID: ack.DeliveryID,
+		Outcome: ack.Outcome, Detail: ack.Detail,
+	}
 }

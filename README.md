@@ -390,7 +390,12 @@ process, dials again every `--retry` (1 s by default) for as long as the service
 the restarted service with the same session: the session gets its topic and away mode back, within
 `reconnect_grace` without being buried at all. A lost connection is the `lost` event, once per
 absence; an absence longer than `--absent` (30 s by default) is the `absent` event, also once, and the
-session adapter tells you that the channel is waiting for the service. The subcommand ends only on
+session adapter tells you that the channel is waiting for the service. An absence ends only when a
+connection has lived `--steady` (10 s), with the `steady` event: a service that crashes right after
+the greeting is still absent. A word handed out before the stop is not handed twice: the session
+adapter's acknowledgement reaches the restarted service before the next long request. Agent replies
+written while the service is gone wait in the subcommand and reach the topic in order; a reply that
+cannot be delivered is the `undelivered` event, which the session adapter tells you. The subcommand ends only on
 `bye`, on its stop, or on a refusal that a new connection cannot cure (another major version of the
 contract, a displaced session connection) — then the `error` event says why. A subcommand that ended
 otherwise (killed, crashed) is started again by the session adapter.

@@ -25,6 +25,9 @@ const patience = 2 * time.Second
 // retry — пауза перед новым соединением в тестах: возврат проверяется, а не выдерживается.
 const retry = 10 * time.Millisecond
 
+// steady — срок, за который соединение в тестах считается вернувшимся.
+const steady = 30 * time.Millisecond
+
 // stopFarewell — срок `bye` на остановке в тестах: на него тест и смотрит, когда служба молчит.
 const stopFarewell = 100 * time.Millisecond
 
@@ -49,8 +52,10 @@ type service struct {
 type probe struct {
 	link   *link.Link
 	events chan link.Event
-	done   chan error
-	stop   context.CancelFunc
+	// steadies — события `steady`: они идут по часам, а не по ходу теста, и тест ждёт их отдельно.
+	steadies chan link.Event
+	done     chan error
+	stop     context.CancelFunc
 }
 
 // Endpoint отдаёт адрес службы в тесте.
@@ -385,8 +390,9 @@ func startWith(
 
 	reader, writer := io.Pipe()
 	events := make(chan link.Event, 16)
+	steadies := make(chan link.Event, 16)
 
-	go scan(reader, events)
+	go scan(reader, events, steadies)
 
 	session := link.New(link.Options{
 		Endpoint:     srv.Endpoint(),
@@ -395,6 +401,8 @@ func startWith(
 		Kind:         kind,
 		Retry:        retry,
 		Absent:       absent,
+		Steady:       steady,
+		Hello:        patience / 2,
 		StopFarewell: stopFarewell,
 		Events:       writer,
 		Log:          io.Discard,
@@ -411,11 +419,11 @@ func startWith(
 		_ = writer.Close()
 	})
 
-	return &probe{link: session, events: events, done: done, stop: stop}
+	return &probe{link: session, events: events, steadies: steadies, done: done, stop: stop}
 }
 
 // scan разбирает строки стандартной выдачи в события.
-func scan(reader io.Reader, events chan link.Event) {
+func scan(reader io.Reader, events chan link.Event, steadies chan link.Event) {
 	lines := bufio.NewScanner(reader)
 
 	for lines.Scan() {
@@ -423,6 +431,12 @@ func scan(reader io.Reader, events chan link.Event) {
 
 		err := json.Unmarshal(lines.Bytes(), &event)
 		if err != nil {
+			continue
+		}
+
+		if event.Event == link.EventSteady {
+			steadies <- event
+
 			continue
 		}
 
@@ -449,5 +463,27 @@ func (p *probe) running(t *testing.T) {
 	case err := <-p.done:
 		t.Fatalf("подкоманда кончилась, хотя связь вернулась: %v", err)
 	case <-time.After(quiet):
+	}
+}
+
+// steadied ждёт события `steady`.
+func (p *probe) steadied(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-p.steadies:
+	case <-time.After(patience):
+		t.Fatal("события `steady` не дождались")
+	}
+}
+
+// unsteady проверяет, что за срок события `steady` не было.
+func (p *probe) unsteady(t *testing.T, span time.Duration) {
+	t.Helper()
+
+	select {
+	case <-p.steadies:
+		t.Fatal("событие `steady` у соединения, которое не прожило срок")
+	case <-time.After(span):
 	}
 }

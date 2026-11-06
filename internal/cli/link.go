@@ -25,6 +25,15 @@ const defaultLinkRetry = time.Second
 // умолчанию — владелец слышит о пропаже раньше, чем служба похоронит сессию.
 const defaultLinkAbsent = 30 * time.Second
 
+// defaultLinkSteady — сколько соединение должно прожить, чтобы пропажа считалась оконченной:
+// служба, падающая сразу после приветствия, — та же пропажа, и она доходит до `absent`.
+const defaultLinkSteady = 10 * time.Second
+
+// linkHello — срок ответа службы на приветствие: служба, принявшая соединение и молчащая, — потеря
+// связи, а не вечное ожидание. Ответ на `hello` — один вызов, кроме возврата похороненной сессии,
+// где служба открывает тему заново вызовом Bot API.
+const linkHello = 30 * time.Second
+
 // linkStopFarewell — срок `bye` на остановке подкоманды: кадр идёт по местному сокету, а клиент,
 // погасивший процесс, ждать его выхода долго не станет.
 const linkStopFarewell = 2 * time.Second
@@ -50,11 +59,13 @@ func newLink(vip *viper.Viper) *cobra.Command {
 	cmd.Flags().String("client", string(protocol.ClientClaudeCode), "клиент сессии: "+clientNames())
 	cmd.Flags().Duration("retry", defaultLinkRetry, "пауза перед новым соединением со службой")
 	cmd.Flags().Duration("absent", defaultLinkAbsent, "сколько службы может не быть, пока владельцу не сказано")
+	cmd.Flags().Duration("steady", defaultLinkSteady, "сколько соединение живёт, чтобы считаться вернувшимся")
 
 	_ = vip.BindPFlag("session", cmd.Flags().Lookup("session"))
 	_ = vip.BindPFlag("client", cmd.Flags().Lookup("client"))
 	_ = vip.BindPFlag("retry", cmd.Flags().Lookup("retry"))
 	_ = vip.BindPFlag("absent", cmd.Flags().Lookup("absent"))
+	_ = vip.BindPFlag("steady", cmd.Flags().Lookup("steady"))
 
 	return cmd
 }
@@ -86,6 +97,8 @@ func runLink(ctx context.Context, vip *viper.Viper) error {
 		Kind:         kind,
 		Retry:        vip.GetDuration("retry"),
 		Absent:       vip.GetDuration("absent"),
+		Steady:       vip.GetDuration("steady"),
+		Hello:        linkHello,
 		StopFarewell: linkStopFarewell,
 		Events:       os.Stdout,
 		Log:          os.Stderr,

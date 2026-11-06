@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,6 +164,132 @@ func TestStopDropsLongRequestWithoutAnswer(t *testing.T) {
 	}
 }
 
+// slowAPI — порт Bot API, у которого отправка сообщения, когда тест её взвёл, висит, пока тест её
+// не отпустит: так реплика агента застаёт остановку службы на середине.
+type slowAPI struct {
+	stubAPI
+
+	armed   *atomic.Bool
+	started chan struct{}
+	release chan struct{}
+}
+
+// SendMessage висит, пока тест не отпустит отправку.
+func (a slowAPI) SendMessage(ctx context.Context, _ int64, _ string) (int, error) {
+	if !a.armed.Load() {
+		return 1, nil
+	}
+
+	a.started <- struct{}{}
+
+	select {
+	case <-a.release:
+		return 7, nil
+	case <-ctx.Done():
+		return 0, fmt.Errorf("отправка оборвана: %w", ctx.Err())
+	}
+}
+
+// TestStopFinishesStartedReply: реплика агента, которая уже уходит в тему, остановкой службы не
+// обрывается: служба дописывает её, отвечает на неё и только потом закрывает соединение. Новых
+// запросов после остановки соединение не берёт.
+func TestStopFinishesStartedReply(t *testing.T) {
+	t.Parallel()
+
+	api := slowAPI{
+		stubAPI: stubAPI{}, armed: &atomic.Bool{},
+		started: make(chan struct{}, 1), release: make(chan struct{}),
+	}
+
+	socket, srv := listenWith(t, api)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	served := make(chan error, 1)
+
+	go func() { served <- srv.Serve(ctx) }()
+
+	conn, err := dial(t, context.Background(), socket)
+	if err != nil {
+		t.Fatalf("соединение не открыто: %v", err)
+	}
+
+	defer func() { _ = conn.Close() }()
+
+	reader := protocol.NewReader(conn)
+	writer := protocol.NewWriter(conn)
+
+	inMode(t, reader, writer)
+	api.armed.Store(true)
+
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpAgentMessage, RID: "r-reply", Text: "готово",
+	})
+
+	select {
+	case <-api.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("реплика до Bot API не дошла")
+	}
+
+	stop()
+
+	// Запрос после остановки соединение не берёт: ответа на него не будет.
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpModeStatus, RID: "r-late",
+	})
+
+	close(api.release)
+
+	resp, err := reader.ReadResponse()
+	if err != nil || resp.RID != "r-reply" || !resp.OK {
+		t.Fatalf("начатая реплика не дописана: %+v, %v", resp, err)
+	}
+
+	late, err := reader.ReadResponse()
+	if err == nil {
+		t.Fatalf("запрос после остановки получил ответ: %+v", late)
+	}
+
+	exited(t, served)
+}
+
+// exited ждёт выхода службы без ошибки.
+func exited(t *testing.T, served chan error) {
+	t.Helper()
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("служба вышла с ошибкой: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("служба не вышла после остановки")
+	}
+}
+
+// inMode представляет соединение сессией и включает ей режим: реплики агента идут только в режиме.
+func inMode(t *testing.T, reader *protocol.Reader, writer *protocol.Writer) {
+	t.Helper()
+
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpHello, RID: "r-hello",
+		Role: protocol.RoleSession, Kind: string(protocol.KindMod), Session: "s1",
+		Client: "claude-code",
+	})
+	read(t, reader, "r-hello")
+
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpModeOn, RID: "r-on", Name: "alpha",
+	})
+
+	on := read(t, reader, "r-on")
+	if !on.OK {
+		t.Fatalf("режим не включён: %+v", on.Error)
+	}
+}
+
 // TestSocketPermissions: сокет закрыт правами на владельца — единственная настоящая граница
 // доступа здесь пользователь системы.
 func TestSocketPermissions(t *testing.T) {
@@ -216,6 +343,13 @@ func TestFirstFrameMustBeHello(t *testing.T) {
 func listen(t *testing.T) (string, *server.Server) {
 	t.Helper()
 
+	return listenWith(t, stubAPI{})
+}
+
+// listenWith поднимает службу на своём сокете с названным портом Bot API.
+func listenWith(t *testing.T, api botapi.API) (string, *server.Server) {
+	t.Helper()
+
 	root := t.TempDir()
 
 	// Путь сокета берётся коротким: предел длины адреса Unix-сокета меньше, чем длина
@@ -253,7 +387,7 @@ func listen(t *testing.T) (string, *server.Server) {
 
 	t.Cleanup(func() { _ = jrnl.Close() })
 
-	engine, err := core.New(cfg, stubAPI{}, st, jrnl)
+	engine, err := core.New(cfg, api, st, jrnl)
 	if err != nil {
 		t.Fatalf("ядро не поднялось: %v", err)
 	}
