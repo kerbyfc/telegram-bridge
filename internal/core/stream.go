@@ -45,7 +45,12 @@ func (c *Core) agentMessage(ctx context.Context, conn *Conn, req protocol.Reques
 
 	// Сообщения сессии встают в тему цепочкой: реплика ждёт, пока ляжет всё от прошлого, а
 	// следующее сообщение — её саму и вывод разворота её ссылок.
-	done := c.enterChain(sess)
+	done, err := c.enterChain(ctx, sess)
+	if err != nil {
+		c.abandon(work)
+
+		return protocol.Fail(req.RID, protocol.CodeNetwork, err.Error())
+	}
 
 	resp := c.sendReply(ctx, conn, sess, req)
 	if !resp.OK || work == nil {
@@ -158,7 +163,11 @@ func (c *Core) say(ctx context.Context, conn *Conn, req protocol.Request) protoc
 	}
 
 	// Сказанное встаёт в тему после вывода разворота прошлой реплики, а не между ними.
-	done := c.enterChain(sess)
+	done, err := c.enterChain(ctx, sess)
+	if err != nil {
+		return protocol.Fail(req.RID, protocol.CodeNetwork, err.Error())
+	}
+
 	defer close(done)
 
 	c.topicMu.Lock()

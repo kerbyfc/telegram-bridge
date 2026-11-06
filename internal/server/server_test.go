@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/kerbyfc/telegram-bridge/internal/config"
 	"github.com/kerbyfc/telegram-bridge/internal/core"
 	"github.com/kerbyfc/telegram-bridge/internal/protocol"
+	"github.com/kerbyfc/telegram-bridge/internal/resolve/resolvetest"
 	"github.com/kerbyfc/telegram-bridge/internal/server"
 	"github.com/kerbyfc/telegram-bridge/internal/store"
 )
@@ -164,6 +166,12 @@ func TestStopDropsLongRequestWithoutAnswer(t *testing.T) {
 	}
 }
 
+// TestMain отдаёт тестовый бинарь поддельной командой разворота, когда его зовут ею.
+func TestMain(m *testing.M) {
+	resolvetest.Serve()
+	os.Exit(m.Run())
+}
+
 // slowAPI — порт Bot API, у которого отправка сообщения, когда тест её взвёл, висит, пока тест её
 // не отпустит: так реплика агента застаёт остановку службы на середине.
 type slowAPI struct {
@@ -290,6 +298,144 @@ func inMode(t *testing.T, reader *protocol.Reader, writer *protocol.Writer) {
 	}
 }
 
+// TestStopDropsHangingResolver: остановка снимает разворот ссылок в самом начале, а не после
+// выхода: реплика, ждущая в очереди темы вывода висящей команды, уходит сразу, и служба кончается
+// в срок автозапуска, а брошенная ссылка оставляет строку журнала `link-dropped`.
+func TestStopDropsHangingResolver(t *testing.T) {
+	t.Parallel()
+
+	socket, srv, root := listenConfigured(t, stubAPI{}, func(cfg *config.Config) {
+		res, err := config.NewLinkResolver(`(?m)^needs? input:(.*)$`, `x://[^\s)]+`,
+			resolvetest.Command(resolvetest.ModeSleep, "{link}"), time.Minute)
+		if err != nil {
+			t.Fatalf("запись разворота не собрана: %v", err)
+		}
+
+		cfg.LinkResolvers = append(cfg.LinkResolvers, res)
+	})
+
+	stop, served, reader, writer := running(t, srv, socket)
+
+	inMode(t, reader, writer)
+
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpAgentMessage, RID: "r-link", Text: "needs input: x://a",
+	})
+	read(t, reader, "r-link")
+
+	// Вторая реплика ждёт в очереди темы вывода висящей команды.
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpAgentMessage, RID: "r-next", Text: "дальше",
+	})
+
+	// Короткий запрос следом отвечен — значит, вторая реплика уже взята соединением: кадры
+	// читаются по порядку.
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpModeStatus, RID: "r-status",
+	})
+	read(t, reader, "r-status")
+
+	began := time.Now()
+
+	stop()
+
+	resp, err := reader.ReadResponse()
+	if err != nil || resp.RID != "r-next" || !resp.OK {
+		t.Fatalf("реплика за висящей командой не ушла: %+v, %v", resp, err)
+	}
+
+	exited(t, served)
+
+	if spent := time.Since(began); spent > 3*time.Second {
+		t.Fatalf("остановка шла %s: разворот снят не в её начале", spent)
+	}
+
+	srv.Close()
+
+	journal, err := os.ReadFile(filepath.Join(root, "bridge.log"))
+	if err != nil {
+		t.Fatalf("журнал не прочитан: %v", err)
+	}
+
+	if !strings.Contains(string(journal), "link-dropped") {
+		t.Fatalf("брошенная ссылка не оставила строки `link-dropped`:\n%s", journal)
+	}
+}
+
+// running запускает службу и открывает к ней соединение: отдаёт остановку, исход службы и концы
+// соединения.
+func running(
+	t *testing.T, srv *server.Server, socket string,
+) (context.CancelFunc, chan error, *protocol.Reader, *protocol.Writer) {
+	t.Helper()
+
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+
+	served := make(chan error, 1)
+
+	go func() { served <- srv.Serve(ctx) }()
+
+	conn, err := dial(t, context.Background(), socket)
+	if err != nil {
+		t.Fatalf("соединение не открыто: %v", err)
+	}
+
+	t.Cleanup(func() { _ = conn.Close() })
+
+	return stop, served, protocol.NewReader(conn), protocol.NewWriter(conn)
+}
+
+// TestStopDropsReplyPastGrace: реплика, которую служба не дописала за срок дописывания, ответа не
+// получает: отказ «вызов прерван» подкоманда прочла бы концом реплики, а обрыв — потерей связи, и
+// она отдаст реплику вернувшейся службе.
+func TestStopDropsReplyPastGrace(t *testing.T) {
+	t.Parallel()
+
+	api := slowAPI{
+		stubAPI: stubAPI{}, armed: &atomic.Bool{},
+		started: make(chan struct{}, 1), release: make(chan struct{}),
+	}
+
+	socket, srv := listenWith(t, api)
+	srv.SetGrace(100 * time.Millisecond)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	served := make(chan error, 1)
+
+	go func() { served <- srv.Serve(ctx) }()
+
+	conn, err := dial(t, context.Background(), socket)
+	if err != nil {
+		t.Fatalf("соединение не открыто: %v", err)
+	}
+
+	defer func() { _ = conn.Close() }()
+
+	reader := protocol.NewReader(conn)
+	writer := protocol.NewWriter(conn)
+
+	inMode(t, reader, writer)
+	api.armed.Store(true)
+
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpAgentMessage, RID: "r-reply", Text: "готово",
+	})
+
+	<-api.started
+
+	stop()
+
+	resp, err := reader.ReadResponse()
+	if err == nil {
+		t.Fatalf("реплика, оборванная сроком дописывания, получила ответ: %+v", resp)
+	}
+
+	exited(t, served)
+}
+
 // TestSocketPermissions: сокет закрыт правами на владельца — единственная настоящая граница
 // доступа здесь пользователь системы.
 func TestSocketPermissions(t *testing.T) {
@@ -350,6 +496,18 @@ func listen(t *testing.T) (string, *server.Server) {
 func listenWith(t *testing.T, api botapi.API) (string, *server.Server) {
 	t.Helper()
 
+	socket, srv, _ := listenConfigured(t, api, func(*config.Config) {})
+
+	return socket, srv
+}
+
+// listenConfigured поднимает службу с правкой настроек и отдаёт ещё и корень состояния: в нём
+// журнал службы.
+func listenConfigured(
+	t *testing.T, api botapi.API, adjust func(*config.Config),
+) (string, *server.Server, string) {
+	t.Helper()
+
 	root := t.TempDir()
 
 	// Путь сокета берётся коротким: предел длины адреса Unix-сокета меньше, чем длина
@@ -387,6 +545,8 @@ func listenWith(t *testing.T, api botapi.API) (string, *server.Server) {
 
 	t.Cleanup(func() { _ = jrnl.Close() })
 
+	adjust(cfg)
+
 	engine, err := core.New(cfg, api, st, jrnl)
 	if err != nil {
 		t.Fatalf("ядро не поднялось: %v", err)
@@ -397,7 +557,7 @@ func listenWith(t *testing.T, api botapi.API) (string, *server.Server) {
 		t.Fatalf("сокет не поднят: %v", err)
 	}
 
-	return socket, srv
+	return socket, srv, root
 }
 
 // dial открывает соединение со службой.

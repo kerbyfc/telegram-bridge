@@ -138,6 +138,11 @@ func Dial(ctx context.Context, address string) (*Client, error) {
 		return nil, err //nolint:wrapcheck // причина названа адресом и площадкой внутри endpoint
 	}
 
+	return newClient(conn), nil
+}
+
+// newClient заводит соединение со службой поверх открытого соединения и читает его ответы.
+func newClient(conn net.Conn) *Client {
 	client := &Client{
 		conn:   conn,
 		reader: protocol.NewReader(conn),
@@ -151,5 +156,5 @@ func Dial(ctx context.Context, address string) (*Client, error) {
 
 	go client.read()
 
-	return client, nil
+	return client
 }

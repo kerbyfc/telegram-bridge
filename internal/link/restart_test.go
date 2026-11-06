@@ -279,3 +279,85 @@ func TestHelloHasDeadline(t *testing.T) {
 		t.Fatalf("после молчания приветствия не повторено: %+v", again)
 	}
 }
+
+// TestRepliesCutInFlightKeepOrder: две реплики оборвались на лету одним обрывом. В очередь они
+// возвращаются по порядку прихода, а не как попало, и вернувшаяся служба получает их по порядку.
+func TestRepliesCutInFlightKeepOrder(t *testing.T) {
+	t.Parallel()
+
+	srv := listen(t)
+	mod := start(t, srv)
+	attach(t, srv, mod)
+	srv.take(t)
+
+	posted := make(chan int, 2)
+
+	for _, text := range []string{"первая", "вторая"} {
+		go func() {
+			status, _ := mod.post(t, "/message", link.Message{Text: text})
+			posted <- status
+		}()
+
+		if req := srv.take(t); req.Op != protocol.OpAgentMessage || req.Text != text {
+			t.Fatalf("на лету ушла не та реплика: %+v", req)
+		}
+	}
+
+	srv.vanish(t)
+
+	for range 2 {
+		if status := <-posted; status != http.StatusOK {
+			t.Fatalf("оборванная реплика не принята в очередь: %d", status)
+		}
+	}
+
+	mod.event(t)
+	srv.revive(t)
+	reattach(t, srv, mod)
+
+	var replies []string
+
+	for len(replies) < 2 {
+		req := srv.take(t)
+		if req.Op != protocol.OpAgentMessage {
+			continue
+		}
+
+		replies = append(replies, req.Text)
+		srv.ok(t, req)
+	}
+
+	if replies[0] != "первая" || replies[1] != "вторая" {
+		t.Fatalf("оборванные реплики отданы не по порядку: %v", replies)
+	}
+}
+
+// TestRefusedLiveReplyIsSaid: служба отбила реплику, отправленную при живой связи, — отказ
+// доходит до средства сессии, и владелец узнаёт, что реплика до темы не дошла.
+func TestRefusedLiveReplyIsSaid(t *testing.T) {
+	t.Parallel()
+
+	srv := listen(t)
+	mod := start(t, srv)
+	attach(t, srv, mod)
+	srv.take(t)
+
+	posted := make(chan int, 1)
+
+	go func() {
+		status, _ := mod.post(t, "/message", link.Message{Text: "реплика"})
+		posted <- status
+	}()
+
+	req := srv.take(t)
+	srv.fail(t, req, protocol.CodeNetwork, "кусок текста не отправлен: сеть не отвечает")
+
+	if status := <-posted; status != http.StatusBadGateway {
+		t.Fatalf("отказ службы дошёл до средства сессии не так: %d", status)
+	}
+
+	said := mod.event(t)
+	if said.Event != link.EventUndelivered {
+		t.Fatalf("о непринятой реплике сказано не так: %+v", said)
+	}
+}

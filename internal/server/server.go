@@ -20,12 +20,19 @@ type Server struct {
 	core     *core.Core
 	listener net.Listener
 	conns    sync.WaitGroup
+
+	// grace — срок дописывания начатых коротких запросов на остановке (`drainGrace`).
+	grace time.Duration
 }
 
 // drainGrace — сколько остановка ждёт начатых коротких запросов: реплика агента, которая уже
-// уходит в тему, дописывается в пределах одного вызова Bot API, а не обрывается на середине.
-// Меньше срока, который даёт остановке launchd (20 с), чтобы служба вышла сама.
-const drainGrace = 15 * time.Second
+// уходит в тему, дописывается, а не обрывается на середине. Вместе с `closeGrace` меньше срока,
+// который даёт остановке launchd (20 с), чтобы служба вышла сама.
+const drainGrace = 10 * time.Second
+
+// closeGrace — срок отметок на сообщениях владельца, которые служба ставит при закрытии
+// соединения сессии: на остановке они не держат выход дольше него.
+const closeGrace = 5 * time.Second
 
 // Addr отдаёт адрес, на котором служба слушает.
 func (s *Server) Addr() string {
@@ -44,7 +51,11 @@ func (s *Server) Serve(ctx context.Context) error {
 			return
 		}
 
-		timer := time.NewTimer(drainGrace)
+		// Разворот ссылок снимается в самом начале остановки: реплика, ждущая в очереди темы
+		// вывода висящей команды, иначе ждала бы её срок.
+		s.core.Halt()
+
+		timer := time.NewTimer(s.grace)
 		defer timer.Stop()
 
 		select {
@@ -116,8 +127,14 @@ func (s *Server) handleConn(ctx context.Context, drain context.Context, conn net
 	handle := s.core.NewConn()
 
 	// Закрытие соединения переживает отмену его ctx: служба на нём говорит владельцу, что его
-	// слово осталось в ящике, и ctx закрывшегося соединения этой отправке не указ.
-	defer s.core.CloseConn(context.WithoutCancel(ctx), handle)
+	// слово осталось в ящике, и ctx закрывшегося соединения этой отправке не указ. Срок у неё свой:
+	// на остановке она не держит выход службы.
+	defer func() {
+		closing, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeGrace)
+		defer cancel()
+
+		s.core.CloseConn(closing, handle)
+	}()
 
 	reader := protocol.NewReader(conn)
 	link := newWire(conn)
@@ -148,14 +165,14 @@ func (s *Server) handleConn(ctx context.Context, drain context.Context, conn net
 			defer requests.Done()
 
 			if long {
-				s.answer(waitCtx, link, handle, req, true)
+				s.answer(waitCtx, link, handle, req)
 
 				return
 			}
 
 			defer link.short.Done()
 
-			s.answer(shortCtx, link, handle, req, false)
+			s.answer(shortCtx, link, handle, req)
 		}()
 	}
 
@@ -166,19 +183,12 @@ func (s *Server) handleConn(ctx context.Context, drain context.Context, conn net
 	requests.Wait()
 }
 
-// answer исполняет запрос и отдаёт ответ. Ответ долгого запроса, собранный после конца
-// соединения или остановки службы, не уходит: на остановке это ответ оборванному запросу, а не его
-// исход.
-func (s *Server) answer(ctx context.Context, link *wire, handle *core.Conn, req protocol.Request, long bool) {
-	resp := s.core.Handle(ctx, handle, req)
-
-	if long {
-		link.write(resp, ctx.Done())
-
-		return
-	}
-
-	link.write(resp, nil)
+// answer исполняет запрос и отдаёт ответ. Ответ, собранный после конца своего ctx, не уходит:
+// долгий запрос оборван остановкой, короткий — истёкшим сроком дописывания или концом соединения,
+// и это ответ оборванному запросу, а не его исход. Подкоманда `link` видит обрыв и повторяет
+// запрос вернувшейся службе.
+func (s *Server) answer(ctx context.Context, link *wire, handle *core.Conn, req protocol.Request) {
+	link.write(s.core.Handle(ctx, handle, req), ctx.Done())
 }
 
 // wire — запись в одно соединение и его закрытие на остановке службы.
@@ -252,7 +262,7 @@ func Listen(ctx context.Context, address string, engine *core.Core) (*Server, er
 		return nil, fmt.Errorf("%s службы не поднят: %w", endpoint.Word(), err)
 	}
 
-	return &Server{core: engine, listener: listener, conns: sync.WaitGroup{}}, nil
+	return &Server{core: engine, listener: listener, conns: sync.WaitGroup{}, grace: drainGrace}, nil
 }
 
 // acceptFailed отличает закрытие адреса остановкой службы от настоящего отказа приёма.

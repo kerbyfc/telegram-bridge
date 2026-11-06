@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/kerbyfc/telegram-bridge/internal/resolve"
@@ -121,8 +122,9 @@ func (c *Core) deliverResolved(sess *Session, work *batch, done chan struct{}) {
 // enterChain ставит сообщение сессии в очередь темы: ждёт, пока ляжет всё от прошлого —
 // реплика и вывод разворота её ссылок, — и отдаёт свой знак конца, который звонящий закрывает,
 // когда его сообщение легло. Ожидание конечно: команды ограничены своими сроками, отправка —
-// сроками Bot API. Отмена запроса его не прерывает: дописанное сообщение в тему уходит всё равно.
-func (c *Core) enterChain(sess *Session) chan struct{} {
+// сроками Bot API, — и ограничено ctx запроса: кончился срок дописывания на остановке службы —
+// сообщение не отправляется, а его место в очереди освобождается, когда ляжет прошлое.
+func (c *Core) enterChain(ctx context.Context, sess *Session) (chan struct{}, error) {
 	done := make(chan struct{})
 
 	c.mu.Lock()
@@ -130,11 +132,21 @@ func (c *Core) enterChain(sess *Session) chan struct{} {
 	sess.replied = done
 	c.mu.Unlock()
 
-	if prev != nil {
-		<-prev
+	if prev == nil {
+		return done, nil
 	}
 
-	return done
+	select {
+	case <-prev:
+		return done, nil
+	case <-ctx.Done():
+		go func() {
+			<-prev
+			close(done)
+		}()
+
+		return nil, fmt.Errorf("очередь темы не дождалась прошлого сообщения: %w", ctx.Err())
+	}
 }
 
 // journalResolve пишет строку журнала о развороте ссылки.

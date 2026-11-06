@@ -62,6 +62,9 @@ type handoff struct {
 	// оно уходит службе первым кадром вернувшегося соединения, раньше долгого запроса, — иначе
 	// служба подала бы то же слово второй раз.
 	ack *Ack
+	// deferred будит `resume`, который уже ждёт подтверждения, когда подтверждение отложено:
+	// иначе отложенное после начала ожидания лежало бы до следующего обрыва.
+	deferred chan struct{}
 }
 
 // maxBacklog — сколько реплик агента подкоманда копит, пока связи со службой нет. Больше —
@@ -91,7 +94,8 @@ type Link struct {
 
 	// backlog — реплики агента, ждущие связи со службой, в порядке прихода; flushing — их
 	// отдаёт вернувшееся соединение, и новая реплика встаёт за ними, а не обгоняет их.
-	backlog  []string
+	backlog  []reply
+	seq      uint64
 	flushing bool
 	kick     chan struct{}
 
@@ -347,17 +351,36 @@ func (l *Link) resume(ctx context.Context, client *Client) error {
 		return nil
 	}
 
-	l.mu.Lock()
+	for {
+		l.mu.Lock()
 
-	ack := taken.ack
+		ack := taken.ack
 
-	l.mu.Unlock()
+		l.mu.Unlock()
 
-	if ack == nil {
-		return l.awaitAck(ctx, client, taken)
+		if ack != nil {
+			return l.forward(ctx, client, taken, *ack)
+		}
+
+		// Подтверждения ещё нет: оно придёт по этому соединению само (`confirm`) или будет
+		// отложено гонкой с ним (`postpone`) — тогда ожидание просыпается и отдаёт его отсюда.
+		select {
+		case <-taken.done:
+			return taken.failure
+		case <-taken.deferred:
+		case <-client.Done():
+			return fmt.Errorf("%w: подтверждения приёма дождаться не на чем", ErrLinkLost)
+		case <-l.stop:
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("ожидание подтверждения приёма прервано: %w", ctx.Err())
+		}
 	}
+}
 
-	resp, err := client.Call(ctx, ackRequest(*ack))
+// forward отдаёт отложенное подтверждение приёма вернувшимся соединением.
+func (l *Link) forward(ctx context.Context, client *Client, taken *handoff, ack Ack) error {
+	resp, err := client.Call(ctx, ackRequest(ack))
 	if err != nil {
 		return err
 	}
@@ -369,7 +392,7 @@ func (l *Link) resume(ctx context.Context, client *Client) error {
 	}
 
 	l.note("подтверждение приёма " + ack.DeliveryID + " отдано службе после возврата связи")
-	l.settle(*ack, taken)
+	l.settle(ack, taken)
 
 	return nil
 }
@@ -486,6 +509,11 @@ func (l *Link) postpone(ack Ack, taken *handoff) protocol.Response {
 
 	l.mu.Unlock()
 
+	select {
+	case taken.deferred <- struct{}{}:
+	default:
+	}
+
 	l.note("подтверждение приёма " + ack.DeliveryID + " уйдёт службе, когда связь вернётся")
 
 	return protocol.Ok("")
@@ -554,7 +582,10 @@ func (l *Link) release() {
 
 // expect запоминает выданную доставку и отдаёт её, чтобы ждать подтверждения приёма.
 func (l *Link) expect(id string) *handoff {
-	taken := &handoff{id: id, done: make(chan struct{}), once: sync.Once{}, failure: nil}
+	taken := &handoff{
+		id: id, done: make(chan struct{}), once: sync.Once{}, failure: nil,
+		ack: nil, deferred: make(chan struct{}, 1),
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -716,6 +747,7 @@ func New(opts Options) *Link {
 		after:     "",
 		front:     "",
 		backlog:   nil,
+		seq:       0,
 		flushing:  false,
 		kick:      make(chan struct{}, 1),
 		upAt:      time.Time{},

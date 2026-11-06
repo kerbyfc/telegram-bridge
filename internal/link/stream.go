@@ -38,15 +38,15 @@ func (l *Link) stream(ctx context.Context, message Message) (protocol.Response, 
 		return protocol.Response{}, err
 	}
 
-	client, queued := l.streamTo(message.Text)
+	client, one, queued := l.streamTo(message.Text)
 	if queued {
 		return protocol.Ok(""), nil
 	}
 
 	//nolint:exhaustruct // кадр заполняется по операции
-	resp, err := client.Call(ctx, protocol.Request{Op: protocol.OpAgentMessage, Text: message.Text})
+	resp, err := client.Call(ctx, protocol.Request{Op: protocol.OpAgentMessage, Text: one.text})
 	if errors.Is(err, ErrLinkLost) {
-		l.queue(message.Text, true)
+		l.queue(one)
 
 		return protocol.Ok(""), nil
 	}
@@ -55,48 +55,68 @@ func (l *Link) stream(ctx context.Context, message Message) (protocol.Response, 
 		return protocol.Response{}, err
 	}
 
+	// Отказ службы доходит до средства сессии как есть, а владелец узнаёт, что реплика до темы
+	// не дошла: отказ — не повод молчать. Снятый режим — обычное дело, о нём не говорится.
+	if !resp.OK {
+		l.refused(resp)
+	}
+
 	return resp, nil
+}
+
+// reply — реплика агента с номером прихода: по нему очередь держит порядок, когда реплики,
+// оборванные на лету, возвращаются в неё вперемешку.
+type reply struct {
+	seq  uint64
+	text string
 }
 
 // streamTo отдаёт соединение для реплики или ставит её в очередь: без связи и тогда, когда
 // очередь ещё не отдана, — новая реплика не обгоняет старые. Решение и постановка идут под одним
 // замком: иначе реплика встала бы в очередь, которую отдача уже кончила.
-func (l *Link) streamTo(text string) (*Client, bool) {
+func (l *Link) streamTo(text string) (*Client, reply, bool) {
 	l.mu.Lock()
+
+	l.seq++
+	one := reply{seq: l.seq, text: text}
 
 	client := l.client
 	if client != nil && !l.flushing && len(l.backlog) == 0 {
 		l.mu.Unlock()
 
-		return client, false
+		return client, one, false
 	}
 
-	lost := l.enqueue(text, false)
+	lost := l.enqueue(one)
 	l.mu.Unlock()
 
 	l.overflow(lost)
 	l.wake()
 
-	return nil, true
+	return nil, one, true
 }
 
-// queue кладёт в начало очереди реплику, оборванную на лету: она старше ждущих.
-func (l *Link) queue(text string, first bool) {
+// queue возвращает в очередь реплику, оборванную на лету: на своё место по номеру прихода.
+func (l *Link) queue(one reply) {
 	l.mu.Lock()
-	lost := l.enqueue(text, first)
+	lost := l.enqueue(one)
 	l.mu.Unlock()
 
 	l.overflow(lost)
 	l.wake()
 }
 
-// enqueue кладёт реплику в очередь под замком и отвечает, потерялась ли старейшая сверх предела.
-func (l *Link) enqueue(text string, first bool) bool {
-	if first {
-		l.backlog = append([]string{text}, l.backlog...)
-	} else {
-		l.backlog = append(l.backlog, text)
+// enqueue ставит реплику в очередь по номеру прихода под замком и отвечает, потерялась ли
+// старейшая сверх предела.
+func (l *Link) enqueue(one reply) bool {
+	at := len(l.backlog)
+	for at > 0 && l.backlog[at-1].seq > one.seq {
+		at--
 	}
+
+	l.backlog = append(l.backlog, reply{seq: 0, text: ""})
+	copy(l.backlog[at+1:], l.backlog[at:])
+	l.backlog[at] = one
 
 	if len(l.backlog) <= maxBacklog {
 		return false
@@ -152,15 +172,15 @@ func (l *Link) flush(ctx context.Context) {
 		}
 
 		l.flushing = true
-		text := l.backlog[0]
+		one := l.backlog[0]
 		l.backlog = l.backlog[1:]
 		l.mu.Unlock()
 
 		//nolint:exhaustruct // кадр заполняется по операции
-		resp, err := client.Call(ctx, protocol.Request{Op: protocol.OpAgentMessage, Text: text})
+		resp, err := client.Call(ctx, protocol.Request{Op: protocol.OpAgentMessage, Text: one.text})
 		if err != nil {
 			l.mu.Lock()
-			lost := l.enqueue(text, true)
+			lost := l.enqueue(one)
 			l.flushing = false
 			l.mu.Unlock()
 
@@ -175,7 +195,7 @@ func (l *Link) flush(ctx context.Context) {
 	}
 }
 
-// refused решает, что делать с репликой из очереди, которую служба отбила. Снятый режим — обычное
+// refused решает, что делать с репликой, которую служба отбила. Снятый режим — обычное
 // дело: вне режима реплики в тему не идут вовсе, и говорить владельцу не о чем. Прочий отказ —
 // реплика потеряна, и владелец узнаёт об этом.
 func (l *Link) refused(resp protocol.Response) {
@@ -183,13 +203,13 @@ func (l *Link) refused(resp protocol.Response) {
 
 	var code RefusedError
 	if errors.As(failure, &code) && code.Code == protocol.CodeNoMode {
-		l.note("реплика из очереди не ушла: режим снят")
+		l.note("реплика не ушла: режим снят")
 
 		return
 	}
 
 	// Владельцу — код отказа; полный текст причины идёт в поток ошибок, в журнал отладки.
-	l.note("служба отбила реплику из очереди: " + failure.Error())
+	l.note("служба отбила реплику: " + failure.Error())
 	l.undelivered("служба отказала `"+string(code.Code)+"`", 1)
 }
 
