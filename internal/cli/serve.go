@@ -84,6 +84,13 @@ func serve(ctx context.Context, vip *viper.Viper, service bool) error {
 		hideServiceWindow()
 	}
 
+	// Программы записей разворота ищутся по PATH самой службы, а не терминала установки: под
+	// автозапуском он обычно короче. Отказ уходит в вывод процесса, который называет самопроверка.
+	err = cfg.ResolvePrograms()
+	if err != nil {
+		return exitError{ExitFailed, err.Error()}
+	}
+
 	client, err := newClient(cfg)
 	if err != nil {
 		return exitError{ExitFailed, err.Error()}

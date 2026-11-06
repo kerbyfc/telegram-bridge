@@ -36,12 +36,18 @@ func (c *Core) serviceStatus(req protocol.Request) protocol.Response {
 	// обхода словаря.
 	sort.Slice(sessions, func(one, two int) bool { return sessions[one].ID < sessions[two].ID })
 
+	resolvers := make([]protocol.ResolverStatus, 0, len(c.cfg.LinkResolvers))
+	for _, resolver := range c.cfg.LinkResolvers {
+		resolvers = append(resolvers, protocol.ResolverStatus{Program: resolver.Program, Path: resolver.Command[0]})
+	}
+
 	resp := protocol.Ok(req.RID)
 	resp.Service = &protocol.ServiceStatus{
 		Version:   protocol.Version,
 		StartedAt: c.startedAt.Format(time.RFC3339),
 		Poll:      pollStatus(c.poll),
 		Sessions:  sessions,
+		Resolvers: resolvers,
 	}
 
 	return resp

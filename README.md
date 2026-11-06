@@ -331,8 +331,8 @@ telegram-bridge doctor --config ~/.dm-telegram-go/config.yaml --session <id>   #
 There are eight checks, each named by a line: settings (the token is parsed into a bot id, the group is
 a supergroup, the owner is named), topic icons (both are in Telegram's set), the state directory, the log with its generations and the process
 output, the autostart entry, the liveness of the service itself, the bot and the group, and session
-connections. With `link_resolvers` named, one more check says whether the program of each
-entry is found and executable. The token, the group and the channel to Telegram are confirmed by the outcome of the last
+connections. With `link_resolvers` named, one more check names the path the running service
+found for the program of each entry. The token, the group and the channel to Telegram are confirmed by the outcome of the last
 poll — the only call the self-check makes itself is the one for the set of icons. No service — the check fails, and the last
 lines of **both** files are appended to the refusal: its own log and the process output where a panic
 goes (the autostart system writes it, and the log does not have it at all). The cause of a crash must be
@@ -462,6 +462,11 @@ output must be UTF-8 on Windows too: a command printing in the console code page
 - `command` is a program and its arguments, run without a shell; `{link}` inside an argument is
   replaced by the link, which stays inside that one argument. A leading `~` in the program is
   expanded.
+- The program is a bare name or a full path. A bare name is looked up in the service's own `PATH`
+  when the service starts; not found — the service does not start, and the reason with the program
+  and that `PATH` goes to the process output. Under launchd, systemd or the Windows task scheduler
+  the service's `PATH` is usually much shorter than your terminal's, so for a program in
+  `~/.local/bin` or another personal directory a full path is the reliable choice.
 - The link is written by the agent. A link starting with `-` would become a flag of the command:
   put `--` before `{link}` if the command understands it, and anchor `link` to the start of a real
   link (`https://…`, `obsidian://…`) rather than matching any word.
@@ -488,8 +493,11 @@ it. On service stop the commands are killed, nothing goes to the topic, and each
 
 A broken entry (an invalid expression, more than one group in `where`, an empty command, `{link}`
 in the program or in no argument at all, a missing or invalid `timeout`, a batch file as the program)
-is an error loading the settings: the service does not start. `doctor` adds a "ссылки" check: the
-program of each entry is found, executable and not a batch file.
+is an error loading the settings: the service does not start. `doctor` adds a "ссылки" check that
+says what the service sees, not the terminal: the running service names the path it found for each
+program (`service.status`). Without a running service the check is "not confirmed" — the terminal's
+`PATH` is not the service's. Entries in the file differing from the service's ones also give "not
+confirmed": restart the service.
 
 ## Log
 

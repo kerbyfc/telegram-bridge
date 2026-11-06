@@ -1,9 +1,9 @@
 package core
 
 import (
+	"context"
 	"time"
 
-	"context"
 	"github.com/kerbyfc/telegram-bridge/internal/resolve"
 	"github.com/kerbyfc/telegram-bridge/internal/store"
 )

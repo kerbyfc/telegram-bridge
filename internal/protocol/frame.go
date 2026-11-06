@@ -185,6 +185,14 @@ type ServiceStatus struct {
 	StartedAt string          `json:"started_at"`
 	Poll      PollStatus      `json:"poll"`
 	Sessions  []SessionStatus `json:"sessions"`
+	// Resolvers — программы записей разворота ссылок и пути, которые служба нашла по своему PATH.
+	Resolvers []ResolverStatus `json:"resolvers,omitempty"`
+}
+
+// ResolverStatus — программа записи разворота: как её назвала запись и где её нашла служба.
+type ResolverStatus struct {
+	Program string `json:"program"`
+	Path    string `json:"path"`
 }
 
 // Error — отказ службы с кодом контракта.

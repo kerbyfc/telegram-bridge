@@ -356,3 +356,22 @@ func TestОстановкаСлужбыБросаетРазворот(t *testing
 	rig.reply(conn, "needs input: [б](x://два)")
 	core.WaitResolving(rig.core)
 }
+
+// TestСостояниеСлужбыНазываетПутиПрограмм: самопроверка узнаёт у службы, где та нашла программу
+// каждой записи, — по PATH службы, а не терминала.
+func TestСостояниеСлужбыНазываетПутиПрограмм(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	rig.withResolver(resolvetest.ModePrint, time.Second)
+
+	resp := rig.do(rig.tool(""), rig.req(protocol.OpServiceStatus))
+	if !resp.OK || resp.Service == nil || len(resp.Service.Resolvers) != 1 {
+		t.Fatalf("состояние без записей разворота: %+v", resp)
+	}
+
+	got := resp.Service.Resolvers[0]
+	if got.Program != os.Args[0] || got.Path != os.Args[0] {
+		t.Fatalf("программа записи названа не так: %+v", got)
+	}
+}

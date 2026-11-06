@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -23,7 +24,10 @@ type LinkResolver struct {
 	Where *regexp.Regexp
 	// Link — ссылка внутри места.
 	Link *regexp.Regexp
+	// Program — программа, как её назвала запись: голое имя или путь.
+	Program string
 	// Command — программа и аргументы без оболочки; `{link}` в аргументах заменяется ссылкой.
+	// Первый элемент — путь, который нашла служба (`ResolvePrograms`), а до поиска — имя записи.
 	Command []string
 	// Timeout — срок одного запуска команды.
 	Timeout time.Duration
@@ -87,7 +91,7 @@ func NewLinkResolver(where, link string, command []string, timeout time.Duration
 
 	args := append([]string{program}, command[1:]...)
 
-	return LinkResolver{Where: whereRE, Link: linkRE, Command: args, Timeout: timeout}, nil
+	return LinkResolver{Where: whereRE, Link: linkRE, Program: program, Command: args, Timeout: timeout}, nil
 }
 
 // checkCommand проверяет команду записи: программа названа, ссылка стоит хотя бы в одном
@@ -140,25 +144,41 @@ func (c *Config) parseLinkResolvers() error {
 	return nil
 }
 
-// CheckProgram отказывает пакетным файлам Windows (`.cmd`, `.bat`) — и названным прямо, и
-// найденным поиском по `PATH` и `PATHEXT`. Их исполняет `cmd.exe`, который разбирает аргументы
-// заново: `&` в ссылке рвёт команду, а ссылка вида `x&calc` запускает чужую программу. Отказ одинаков
-// на всех площадках: один файл настроек значит одно и то же везде.
+// CheckProgram отказывает пакетным файлам Windows (`.cmd`, `.bat`) без учёта регистра. Их
+// исполняет `cmd.exe`, который разбирает аргументы заново: `&` в ссылке рвёт команду, а ссылка вида
+// `x&calc` запускает чужую программу. Отказ одинаков на всех площадках: один файл настроек значит
+// одно и то же везде.
 func CheckProgram(program string) error {
-	names := []string{program}
-
-	found, err := exec.LookPath(program)
-	if err == nil {
-		names = append(names, found)
+	switch strings.ToLower(filepath.Ext(program)) {
+	case ".cmd", ".bat":
+		return fmt.Errorf("%w: `%s`: программа %q — пакетный файл Windows: его исполняет cmd.exe, "+
+			"который разбирает ссылку заново, и `&` в ней становится второй командой; назови исполняемый файл",
+			ErrBadConfig, LinkKey, program)
 	}
 
-	for _, name := range names {
-		switch strings.ToLower(filepath.Ext(name)) {
-		case ".cmd", ".bat":
-			return fmt.Errorf("%w: `%s`: программа %q — пакетный файл Windows: его исполняет cmd.exe, "+
-				"который разбирает ссылку заново, и `&` в ней становится второй командой; назови исполняемый файл",
-				ErrBadConfig, LinkKey, name)
+	return nil
+}
+
+// ResolvePrograms находит программу каждой записи разворота по `PATH` процесса, который его зовёт,
+// — службы — и ставит найденный путь в команду. Не нашлась программа или нашёлся пакетный файл —
+// отказ с причиной: запись, каждая ссылка которой падала бы строкой отказа, служба не поднимает.
+// Под автозапуском `PATH` службы обычно короче, чем в терминале, поэтому причина называет его.
+func (c *Config) ResolvePrograms() error {
+	for num := range c.LinkResolvers {
+		resolver := &c.LinkResolvers[num]
+
+		path, err := exec.LookPath(resolver.Program)
+		if err != nil {
+			return fmt.Errorf("%w: `%s`, запись %d: программа %q не найдена по PATH службы (%s): %w",
+				ErrBadConfig, LinkKey, num+1, resolver.Program, os.Getenv("PATH"), err)
 		}
+
+		err = CheckProgram(path)
+		if err != nil {
+			return fmt.Errorf("запись %d: %w", num+1, err)
+		}
+
+		resolver.Command[0] = path
 	}
 
 	return nil

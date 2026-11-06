@@ -98,7 +98,12 @@ func doctor(cmd *cobra.Command, vip *viper.Viper) error {
 
 	// Служба спрашивается раньше, чем печатается автозапуск: бинарник без службы и служба без
 	// бинарника — разные беды, и проверка автозапуска называет ту, что есть.
-	live, sessions := serviceChecks(cmd.Context(), cfg)
+	live, status := serviceChecks(cmd.Context(), cfg)
+
+	var sessions []protocol.SessionStatus
+	if status != nil {
+		sessions = status.Sessions
+	}
 
 	checks := []check{
 		settingsCheck(cfg, path),
@@ -108,8 +113,8 @@ func doctor(cmd *cobra.Command, vip *viper.Viper) error {
 		autostartCheck(cmd, vip, live[0].State == stateOK),
 	}
 
-	if len(cfg.LinkResolvers) > 0 {
-		checks = append(checks, resolversCheck(cfg))
+	if len(cfg.LinkResolvers) > 0 || (status != nil && len(status.Resolvers) > 0) {
+		checks = append(checks, resolversCheck(cfg, status))
 	}
 
 	checks = append(checks, live...)
@@ -317,7 +322,7 @@ const binaryFix = "Повторная установка (`install`) вернё�
 // serviceChecks спрашивает саму службу: живость, исход последнего опроса и соединения сессий.
 // Службы нет — к отказу дописываются последние строки журнала: причина падения обязана быть
 // видна одной командой.
-func serviceChecks(ctx context.Context, cfg *config.Config) ([]check, []protocol.SessionStatus) {
+func serviceChecks(ctx context.Context, cfg *config.Config) ([]check, *protocol.ServiceStatus) {
 	resp, err := tool.Call(ctx, tool.Options{Endpoint: cfg.Endpoint(), Session: "", Timeout: tool.DialTimeout},
 		protocol.Request{Op: protocol.OpServiceStatus}) //nolint:exhaustruct // кадру самопроверки хватает операции
 	if err != nil {
@@ -342,7 +347,7 @@ func serviceChecks(ctx context.Context, cfg *config.Config) ([]check, []protocol
 		},
 		pollCheck(resp.Service.Poll),
 		sessionsCheck(resp.Service.Sessions),
-	}, resp.Service.Sessions
+	}, resp.Service
 }
 
 // sessionCheck сверяет id сессии, назвавшийся клиентом, с тем, под которым службу знает её

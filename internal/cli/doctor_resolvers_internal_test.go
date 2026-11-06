@@ -2,53 +2,42 @@ package cli //nolint:testpackage // проверка неэкспортиров�
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kerbyfc/telegram-bridge/internal/config"
+	"github.com/kerbyfc/telegram-bridge/internal/protocol"
 )
 
-// TestResolversCheck: программа записи разворота находится — проверка пройдена; не находится —
-// отказ с именем программы.
+// TestResolversCheck: пути программ называет служба; службы нет — «не подтверждено», а не
+// проверка по PATH терминала; записи службы разошлись с файлом — тоже «не подтверждено».
 func TestResolversCheck(t *testing.T) {
 	t.Parallel()
 
-	resolver := func(program string) config.LinkResolver {
-		res, err := config.NewLinkResolver(`.*`, `.*`, []string{program, "{link}"}, time.Second)
-		if err != nil {
-			t.Fatalf("запись не собрана: %v", err)
-		}
-
-		return res
-	}
-
-	cfg := &config.Config{LinkResolvers: []config.LinkResolver{resolver(os.Args[0])}} //nolint:exhaustruct // проверке нужны одни записи
-
-	if got := resolversCheck(cfg); got.State != stateOK {
-		t.Fatalf("найденная программа названа ненайденной: %+v", got)
-	}
-
-	cfg.LinkResolvers = append(cfg.LinkResolvers, resolver("no-such-program-for-resolve"))
-
-	got := resolversCheck(cfg)
-	if got.State != stateFailed || !strings.Contains(got.Detail, "no-such-program-for-resolve") {
-		t.Fatalf("ненайденная программа не названа: %+v", got)
-	}
-
-	// Пакетный файл, появившийся после загрузки настроек, — тоже отказ: его исполняет cmd.exe.
-	batch := filepath.Join(t.TempDir(), "show.CMD")
-
-	err := os.WriteFile(batch, []byte("@echo off\n"), 0o700) //nolint:gosec // исполняемый файл проверки
+	res, err := config.NewLinkResolver(`.*`, `.*`, []string{"tracker", "{link}"}, time.Second)
 	if err != nil {
-		t.Fatalf("файл не записан: %v", err)
+		t.Fatalf("запись не собрана: %v", err)
 	}
 
-	cfg.LinkResolvers = []config.LinkResolver{{Where: nil, Link: nil, Command: []string{batch, "{link}"}, Timeout: time.Second}}
+	cfg := &config.Config{LinkResolvers: []config.LinkResolver{res}} //nolint:exhaustruct // проверке нужны одни записи
 
-	got = resolversCheck(cfg)
-	if got.State != stateFailed || !strings.Contains(got.Detail, "пакетный файл") {
-		t.Fatalf("пакетный файл принят: %+v", got)
+	if got := resolversCheck(cfg, nil); got.State != stateUnknown || !strings.Contains(got.Detail, "службы нет") {
+		t.Fatalf("без службы проверка не та: %+v", got)
+	}
+
+	status := &protocol.ServiceStatus{ //nolint:exhaustruct // проверке нужны одни записи
+		Resolvers: []protocol.ResolverStatus{{Program: "tracker", Path: "/opt/bin/tracker"}},
+	}
+
+	got := resolversCheck(cfg, status)
+	if got.State != stateOK || !strings.Contains(got.Detail, "tracker → /opt/bin/tracker") {
+		t.Fatalf("путь службы не назван: %+v", got)
+	}
+
+	status.Resolvers[0].Program = os.Args[0]
+
+	if got = resolversCheck(cfg, status); got.State != stateUnknown || !strings.Contains(got.Detail, "перезапусти") {
+		t.Fatalf("расхождение со службой не названо: %+v", got)
 	}
 }
