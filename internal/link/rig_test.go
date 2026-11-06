@@ -35,13 +35,14 @@ const quiet = 50 * time.Millisecond
 // service — служба в тесте: слушает свой сокет, кладёт кадры в канал и отвечает тем, что положит
 // тест. Ядра здесь нет вовсе — проверяется сторона Claude Code.
 type service struct {
-	listener net.Listener
+	path     string
 	requests chan protocol.Request
 
-	mu     sync.Mutex
-	writer *protocol.Writer
-	conn   net.Conn
-	links  int
+	mu       sync.Mutex
+	listener net.Listener
+	writer   *protocol.Writer
+	conn     net.Conn
+	links    int
 }
 
 // probe — запущенное соединение сессии: события его стандартной выдачи и ответ его Run.
@@ -54,7 +55,54 @@ type probe struct {
 
 // Endpoint отдаёт адрес службы в тесте.
 func (s *service) Endpoint() string {
-	return s.listener.Addr().String()
+	return s.path
+}
+
+// vanish гасит службу целиком, как остановка: адрес закрыт, сокета нет, соединение оборвано без
+// ответа.
+func (s *service) vanish(t *testing.T) {
+	t.Helper()
+
+	s.mu.Lock()
+	listener, conn := s.listener, s.conn
+	s.conn = nil
+	s.writer = nil
+	s.mu.Unlock()
+
+	_ = listener.Close()
+
+	if conn != nil {
+		_ = conn.Close()
+	}
+
+	_ = os.Remove(s.path)
+}
+
+// revive поднимает службу снова на том же адресе: так кончается её перезапуск.
+func (s *service) revive(t *testing.T) {
+	t.Helper()
+
+	s.serve(t)
+}
+
+// serve слушает адрес службы и принимает соединения.
+func (s *service) serve(t *testing.T) {
+	t.Helper()
+
+	cfg := net.ListenConfig{} //nolint:exhaustruct // слушателю хватает значений по умолчанию
+
+	listener, err := cfg.Listen(context.Background(), "unix", s.path)
+	if err != nil {
+		t.Fatalf("сокет службы не поднят: %v", err)
+	}
+
+	s.mu.Lock()
+	s.listener = listener
+	s.mu.Unlock()
+
+	t.Cleanup(func() { _ = listener.Close() })
+
+	go s.accept(listener)
 }
 
 // take ждёт следующий кадр, который увидела служба.
@@ -165,9 +213,9 @@ func (s *service) opened() int {
 }
 
 // accept принимает соединения, пока слушатель жив.
-func (s *service) accept() {
+func (s *service) accept(listener net.Listener) {
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
@@ -299,25 +347,17 @@ func listen(t *testing.T) *service {
 
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	cfg := net.ListenConfig{} //nolint:exhaustruct // слушателю хватает значений по умолчанию
-
-	listener, err := cfg.Listen(context.Background(), "unix", filepath.Join(dir, "b.sock"))
-	if err != nil {
-		t.Fatalf("сокет службы не поднят: %v", err)
-	}
-
 	srv := &service{
-		listener: listener,
+		path:     filepath.Join(dir, "b.sock"),
 		requests: make(chan protocol.Request, 16),
 		mu:       sync.Mutex{},
+		listener: nil,
 		writer:   nil,
 		conn:     nil,
 		links:    0,
 	}
 
-	t.Cleanup(func() { _ = listener.Close() })
-
-	go srv.accept()
+	srv.serve(t)
 
 	return srv
 }
@@ -334,6 +374,15 @@ func start(t *testing.T, srv *service) *probe {
 func startAs(t *testing.T, srv *service, client protocol.Client, kind protocol.Kind) *probe {
 	t.Helper()
 
+	return startWith(t, srv, client, kind, time.Hour)
+}
+
+// startWith запускает соединение сессии со своим сроком молчаливой пропажи службы.
+func startWith(
+	t *testing.T, srv *service, client protocol.Client, kind protocol.Kind, absent time.Duration,
+) *probe {
+	t.Helper()
+
 	reader, writer := io.Pipe()
 	events := make(chan link.Event, 16)
 
@@ -345,6 +394,7 @@ func startAs(t *testing.T, srv *service, client protocol.Client, kind protocol.K
 		Client:       client,
 		Kind:         kind,
 		Retry:        retry,
+		Absent:       absent,
 		StopFarewell: stopFarewell,
 		Events:       writer,
 		Log:          io.Discard,
@@ -377,5 +427,27 @@ func scan(reader io.Reader, events chan link.Event) {
 		}
 
 		events <- event
+	}
+}
+
+// still проверяет, что за срок подкоманда не отдала ни одного события.
+func (p *probe) still(t *testing.T, span time.Duration) {
+	t.Helper()
+
+	select {
+	case event := <-p.events:
+		t.Fatalf("событие `%s` там, где их быть не должно: %+v", event.Event, event)
+	case <-time.After(span):
+	}
+}
+
+// running проверяет, что подкоманда не кончилась.
+func (p *probe) running(t *testing.T) {
+	t.Helper()
+
+	select {
+	case err := <-p.done:
+		t.Fatalf("подкоманда кончилась, хотя связь вернулась: %v", err)
+	case <-time.After(quiet):
 	}
 }

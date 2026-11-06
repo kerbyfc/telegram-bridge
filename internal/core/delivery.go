@@ -75,6 +75,9 @@ func (c *Core) deliveryWait(ctx context.Context, conn *Conn, req protocol.Reques
 
 	select {
 	case <-ctx.Done():
+		// Конец ctx — конец соединения: закрыл его мод или остановка службы. Этот ответ не уходит
+		// никому — транспорт не пишет ответов после конца соединения, — и остановка не выглядит
+		// для подкоманды `link` отказом.
 		return protocol.Fail(req.RID, protocol.CodeBadRequest, "соединение закрылось")
 	case got := <-waiter.ch:
 		if got == nil {

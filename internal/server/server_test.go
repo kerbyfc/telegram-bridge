@@ -103,6 +103,66 @@ func TestLongRequestDoesNotBlockShortOnes(t *testing.T) {
 	}
 }
 
+// TestStopDropsLongRequestWithoutAnswer: остановка службы рвёт соединение сессии, а долгому
+// запросу не отвечает ничем: отказ на нём подкоманда `link` прочла бы концом канала, а обрыв —
+// потерей связи, после которой звонят снова. Служба при этом выходит, не дожидаясь, пока
+// соединение закроет сама сессия.
+func TestStopDropsLongRequestWithoutAnswer(t *testing.T) {
+	t.Parallel()
+
+	socket, srv := listen(t)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	served := make(chan error, 1)
+
+	go func() { served <- srv.Serve(ctx) }()
+
+	conn, err := dial(t, context.Background(), socket)
+	if err != nil {
+		t.Fatalf("соединение не открыто: %v", err)
+	}
+
+	defer func() { _ = conn.Close() }()
+
+	reader := protocol.NewReader(conn)
+	writer := protocol.NewWriter(conn)
+
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpHello, RID: "r-hello",
+		Role: protocol.RoleSession, Kind: string(protocol.KindMod), Session: "s1",
+		Client: "claude-code",
+	})
+	read(t, reader, "r-hello")
+
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpDeliveryWait, RID: "r-long",
+	})
+
+	// Долгий запрос дошёл до ядра и висит: короткий на том же соединении уже отвечен.
+	send(t, writer, protocol.Request{ //nolint:exhaustruct // кадр заполняется по операции
+		V: protocol.Version, Op: protocol.OpModeStatus, RID: "r-short",
+	})
+	read(t, reader, "r-short")
+
+	stop()
+
+	resp, err := reader.ReadResponse()
+	if err == nil {
+		t.Fatalf("оборванному долгому запросу пришёл ответ: %+v", resp)
+	}
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("служба вышла с ошибкой: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("служба не вышла: ждёт, пока соединение закроет сессия")
+	}
+}
+
 // TestSocketPermissions: сокет закрыт правами на владельца — единственная настоящая граница
 // доступа здесь пользователь системы.
 func TestSocketPermissions(t *testing.T) {

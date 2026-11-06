@@ -81,6 +81,20 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	reader := protocol.NewReader(conn)
 	writer := protocol.NewWriter(conn)
 
+	// Остановка службы рвёт соединение, а не отвечает на него: долгий запрос, оборванный
+	// остановкой, ответа не получает вовсе, и подкоманда `link` видит потерю связи, после которой
+	// звонят снова, а не отказ, после которого не звонят.
+	var out sync.Mutex
+
+	go func() {
+		<-connCtx.Done()
+
+		out.Lock()
+		defer out.Unlock()
+
+		_ = conn.Close()
+	}()
+
 	var requests sync.WaitGroup
 
 	for {
@@ -95,6 +109,16 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 			defer requests.Done()
 
 			resp := s.core.Handle(connCtx, handle, req)
+
+			out.Lock()
+			defer out.Unlock()
+
+			// Ответ, собранный после конца соединения, не уходит: его ctx кончился раньше, чем
+			// ответ готов, и на остановке это ответ оборванному запросу, а не его исход.
+			if connCtx.Err() != nil {
+				return
+			}
+
 			_ = writer.Write(resp)
 		}()
 	}

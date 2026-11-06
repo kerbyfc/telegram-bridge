@@ -383,6 +383,18 @@ displacement and refusals after which there is no channel all live in it. The cl
 the subcommand translates the name into the kind of caller — `claude-code` holds the session with a
 mod, `opencode` with an adapter.
 
+**A restart of the service does not end the subcommand.** Stopping the service (an update,
+`launchctl kickstart -k`, a reboot) cuts every session connection without answering the long
+`delivery.wait`, so the subcommand sees a lost connection, not a refusal. It stays in the same
+process, dials again every `--retry` (1 s by default) for as long as the service is gone, and greets
+the restarted service with the same session: the session gets its topic and away mode back, within
+`reconnect_grace` without being buried at all. A lost connection is the `lost` event, once per
+absence; an absence longer than `--absent` (30 s by default) is the `absent` event, also once, and the
+session adapter tells you that the channel is waiting for the service. The subcommand ends only on
+`bye`, on its stop, or on a refusal that a new connection cannot cure (another major version of the
+contract, a displaced session connection) — then the `error` event says why. A subcommand that ended
+otherwise (killed, crashed) is started again by the session adapter.
+
 | Session adapter | Where | How it submits your word | How it runs a command |
 |---|---|---|---|
 | Claude Code mod | [kerbyfc/claude-telegram-bridge](https://github.com/kerbyfc/claude-telegram-bridge) | a prompt submission marked as from the user | a client command call |

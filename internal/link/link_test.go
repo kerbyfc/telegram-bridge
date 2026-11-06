@@ -524,3 +524,151 @@ func attach(t *testing.T, srv *service, mod *probe) {
 		t.Fatalf("соединение не открылось: %+v", ready)
 	}
 }
+
+// TestServiceRestartKeepsLink: остановка службы рвёт соединение без ответа, сокета какое-то время
+// нет вовсе, а подкоманда в том же процессе звонит снова и возвращает сессию приветствием. Потеря
+// сказана одним событием на всю пропажу, а не на каждую попытку, и отказа нет.
+func TestServiceRestartKeepsLink(t *testing.T) {
+	t.Parallel()
+
+	srv := listen(t)
+	mod := start(t, srv)
+	attach(t, srv, mod)
+
+	wait := srv.take(t)
+	if wait.Op != protocol.OpDeliveryWait {
+		t.Fatalf("долгий запрос не пришёл: %+v", wait)
+	}
+
+	srv.vanish(t)
+
+	lost := mod.event(t)
+	if lost.Event != link.EventLost {
+		t.Fatalf("о потере соединения сказано не так: %+v", lost)
+	}
+
+	// Службы нет десятки пауз: попытки идут, а событий за них нет.
+	mod.still(t, 20*retry)
+
+	srv.revive(t)
+
+	hello := srv.take(t)
+	if hello.Op != protocol.OpHello || hello.Session != session {
+		t.Fatalf("после перезапуска сессия названа не так: %+v", hello)
+	}
+
+	resp := protocol.Ok(hello.RID)
+	resp.Mode = protocol.ModeOn
+	srv.reply(t, resp)
+
+	ready := mod.event(t)
+	if ready.Event != link.EventReady || ready.Mode != protocol.ModeOn {
+		t.Fatalf("сессия после перезапуска не вернулась с режимом: %+v", ready)
+	}
+
+	if again := srv.take(t); again.Op != protocol.OpDeliveryWait {
+		t.Fatalf("после возврата нет долгого запроса: %+v", again)
+	}
+
+	mod.running(t)
+}
+
+// TestLongAbsenceSaidOnce: службы нет дольше срока молчания — средство сессии узнаёт об этом одним
+// событием `absent`, подкоманда звонит дальше, и вернувшаяся служба получает ту же сессию.
+func TestLongAbsenceSaidOnce(t *testing.T) {
+	t.Parallel()
+
+	const absent = 5 * retry
+
+	srv := listen(t)
+	mod := startWith(t, srv, protocol.ClientClaudeCode, protocol.KindMod, absent)
+	attach(t, srv, mod)
+
+	srv.take(t)
+	srv.vanish(t)
+
+	if lost := mod.event(t); lost.Event != link.EventLost {
+		t.Fatalf("о потере соединения сказано не так: %+v", lost)
+	}
+
+	gone := mod.event(t)
+	if gone.Event != link.EventAbsent || gone.Text == "" {
+		t.Fatalf("о долгой пропаже службы сказано не так: %+v", gone)
+	}
+
+	mod.still(t, 4*absent)
+
+	srv.revive(t)
+	attach(t, srv, mod)
+	mod.running(t)
+}
+
+// TestRestartWithReplyIsRefusal: служба, которая на обрыве всё же ответила отказом долгому запросу,
+// — это отказ, а не потеря: различать их подкоманде нечем, и молча звонить снова на отказ нельзя.
+// Поэтому остановка службы обязана рвать соединение без ответа (транспорт службы).
+func TestRestartWithReplyIsRefusal(t *testing.T) {
+	t.Parallel()
+
+	srv := listen(t)
+	mod := start(t, srv)
+	attach(t, srv, mod)
+
+	wait := srv.take(t)
+	srv.fail(t, wait, protocol.CodeBadRequest, "соединение закрылось")
+
+	if fault := mod.event(t); fault.Event != link.EventError {
+		t.Fatalf("отказ долгому запросу сказан не так: %+v", fault)
+	}
+
+	err := mod.ended(t)
+	if !errors.Is(err, link.ErrRefused) {
+		t.Fatalf("отказ долгому запросу кончил подкоманду не отказом: %v", err)
+	}
+}
+
+// TestByeOutrunsBurial: похороны на службе кончают долгий запрос отказом раньше, чем приходит
+// ответ на `bye`. Этот отказ — конец сессии, а не вытеснение: средство сессии получает ответ на свой
+// `bye`, события `error` нет, и подкоманда кончается без отказа.
+func TestByeOutrunsBurial(t *testing.T) {
+	t.Parallel()
+
+	srv := listen(t)
+	mod := start(t, srv)
+	attach(t, srv, mod)
+
+	wait := srv.take(t)
+
+	answered := make(chan link.Answer, 1)
+
+	go func() {
+		_, answer := mod.bye(t)
+		answered <- answer
+	}()
+
+	farewell := srv.take(t)
+	if farewell.Op != protocol.OpBye {
+		t.Fatalf("вместо `bye` пришёл кадр `%s`", farewell.Op)
+	}
+
+	srv.fail(t, wait, protocol.CodeBadRequest, "соединение больше не держит сессию")
+
+	// Ответ на `bye` служба отдаёт позже: похороны закрывают тему, и это вызов платформы.
+	time.Sleep(quiet)
+	srv.ok(t, farewell)
+
+	select {
+	case answer := <-answered:
+		if !answer.OK {
+			t.Fatalf("`bye` не получил ответа службы: %+v", answer)
+		}
+	case <-time.After(patience):
+		t.Fatal("ответа на `bye` не дождались")
+	}
+
+	err := mod.ended(t)
+	if err != nil {
+		t.Fatalf("после `bye` подкоманда кончилась отказом: %v", err)
+	}
+
+	mod.still(t, quiet)
+}

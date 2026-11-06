@@ -24,8 +24,13 @@ type Options struct {
 	Client protocol.Client
 	// Kind — вид звонящего: роль сессии держит только мод или адаптер.
 	Kind protocol.Kind
-	// Retry — пауза перед новым соединением, когда прежнее пропало.
+	// Retry — пауза перед новым соединением, когда прежнее пропало. Попытки идут, пока служба не
+	// вернётся: потеря связи подкоманду не кончает.
 	Retry time.Duration
+	// Absent — сколько службы может не быть молча. Штатный перезапуск укладывается в него, и
+	// владелец о нём не слышит; дольше — средство сессии получает событие `absent` один раз на
+	// пропажу.
+	Absent time.Duration
 	// StopFarewell — срок `bye` на остановке подкоманды: служба молчит — подкоманда всё равно
 	// выходит в этот срок, и выход клиента ею не висит.
 	StopFarewell time.Duration
@@ -61,6 +66,18 @@ type Link struct {
 
 	stop     chan struct{}
 	stopOnce sync.Once
+
+	// leaving закрывается, когда средство сессии сказало `bye`, а ответа ещё нет. Похороны на
+	// службе кончают долгий запрос отказом раньше, чем приходит ответ на `bye`, и этот отказ —
+	// конец сессии, а не вытеснение: подкоманда ждёт ответа на `bye`, а не рвёт соединение.
+	leaving   chan struct{}
+	leaveOnce sync.Once
+
+	// lostAt — когда пропала связь со службой; пусто, пока соединение живо. Её и absent держит
+	// только цикл соединений `hold`, поэтому мьютекса у них нет.
+	lostAt time.Time
+	// absent — о пропаже этой длины средству сессии уже сказано событием `absent`.
+	absent bool
 }
 
 // Run держит соединение сессии, пока жив ctx или пока средство сессии не сказало `bye`. Конец ctx —
@@ -144,8 +161,10 @@ func (l *Link) Front() string {
 }
 
 // hold открывает соединение заново, пока оно теряется: перезапуск самой службы сессий не
-// хоронит, и мод обязан вернуться в пределах отсрочки возврата. Отказ, после которого новое
-// соединение делу не поможет, кончает подкоманду.
+// хоронит, и мод обязан вернуться в пределах отсрочки возврата. Сокет пропал, служба не отвечает,
+// соединение оборвано — всё это потеря связи: подкоманда ждёт паузу и звонит снова в том же
+// процессе, сколько бы службы ни было. Кончает её только отказ, после которого новое соединение
+// делу не поможет.
 func (l *Link) hold(ctx context.Context) error {
 	for {
 		err := l.attach(ctx)
@@ -162,8 +181,7 @@ func (l *Link) hold(ctx context.Context) error {
 			return err
 		}
 
-		l.note("соединение со службой потеряно: " + err.Error())
-		l.emit(Event{Event: EventLost, Text: err.Error()}) //nolint:exhaustruct // поля события задаёт его вид
+		l.lose(err)
 
 		select {
 		case <-ctx.Done():
@@ -173,6 +191,46 @@ func (l *Link) hold(ctx context.Context) error {
 		case <-time.After(l.opts.Retry):
 		}
 	}
+}
+
+// lose отмечает потерю связи. Строка в поток ошибок и событие `lost` идут один раз на пропажу, а
+// не на каждую попытку: служба, которой нет минуту, иначе сыпала бы ими каждую паузу. Пропажа
+// дольше `Absent` — уже не штатный перезапуск, и средство сессии узнаёт о ней событием `absent`.
+func (l *Link) lose(err error) {
+	if l.lostAt.IsZero() {
+		l.lostAt = time.Now()
+
+		l.note("соединение со службой потеряно, звоню снова: " + err.Error())
+		l.emit(Event{Event: EventLost, Text: err.Error()}) //nolint:exhaustruct // поля события задаёт его вид
+
+		return
+	}
+
+	gone := time.Since(l.lostAt)
+	if l.absent || gone < l.opts.Absent {
+		return
+	}
+
+	l.absent = true
+
+	// Владельцу — что канала пока нет и что делать ничего не надо; причина попытки идёт в поток
+	// ошибок, откуда средство сессии кладёт её в журнал отладки.
+	text := fmt.Sprintf("службы нет %d с, жду её и подключусь сам", int(gone.Seconds()))
+
+	l.note(text + ": " + err.Error())
+	l.emit(Event{Event: EventAbsent, Text: text}) //nolint:exhaustruct // поля события задаёт его вид
+}
+
+// regain отмечает, что связь вернулась: следующая пропажа считается заново.
+func (l *Link) regain() {
+	if l.lostAt.IsZero() {
+		return
+	}
+
+	l.note(fmt.Sprintf("соединение со службой вернулось через %d с", int(time.Since(l.lostAt).Seconds())))
+
+	l.lostAt = time.Time{}
+	l.absent = false
 }
 
 // attach открывает одно соединение сессии: приветствие, затем единственный долгий запрос.
@@ -194,6 +252,7 @@ func (l *Link) attach(ctx context.Context) error {
 	}
 
 	l.adopt(client)
+	l.regain()
 
 	defer l.release()
 
@@ -219,6 +278,12 @@ func (l *Link) pump(ctx context.Context, client *Client) error {
 		}
 
 		if !resp.OK {
+			if l.departing() {
+				l.await(ctx)
+
+				return nil
+			}
+
 			return refusal(resp)
 		}
 
@@ -294,6 +359,8 @@ func (l *Link) farewell(ctx context.Context) (protocol.Response, error) {
 	if err != nil {
 		return protocol.Response{}, err
 	}
+
+	l.leave()
 
 	defer l.halt()
 
@@ -432,6 +499,29 @@ func (l *Link) halt() {
 	l.stopOnce.Do(func() { close(l.stop) })
 }
 
+// leave отмечает, что средство сессии сказало `bye` и ответа ещё нет.
+func (l *Link) leave() {
+	l.leaveOnce.Do(func() { close(l.leaving) })
+}
+
+// departing отвечает, сказан ли уже `bye`.
+func (l *Link) departing() bool {
+	select {
+	case <-l.leaving:
+		return true
+	default:
+		return false
+	}
+}
+
+// await ждёт конца `bye`: соединение нужно ему до ответа.
+func (l *Link) await(ctx context.Context) {
+	select {
+	case <-l.stop:
+	case <-ctx.Done():
+	}
+}
+
 // halted отвечает, кончилась ли подкоманда по слову средства сессии.
 func (l *Link) halted() bool {
 	select {
@@ -482,15 +572,19 @@ func (l *Link) note(text string) {
 // New собирает соединение сессии по настройкам.
 func New(opts Options) *Link {
 	return &Link{
-		opts:     opts,
-		out:      sync.Mutex{},
-		mu:       sync.Mutex{},
-		client:   nil,
-		pending:  nil,
-		after:    "",
-		front:    "",
-		stop:     make(chan struct{}),
-		stopOnce: sync.Once{},
+		opts:      opts,
+		out:       sync.Mutex{},
+		mu:        sync.Mutex{},
+		client:    nil,
+		pending:   nil,
+		after:     "",
+		front:     "",
+		stop:      make(chan struct{}),
+		stopOnce:  sync.Once{},
+		leaving:   make(chan struct{}),
+		leaveOnce: sync.Once{},
+		lostAt:    time.Time{},
+		absent:    false,
 	}
 }
 

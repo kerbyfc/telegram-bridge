@@ -15,9 +15,15 @@ import (
 	"github.com/kerbyfc/telegram-bridge/internal/protocol"
 )
 
-// defaultLinkRetry — пауза перед новым соединением со службой. Возврат обязан успеть в отсрочку
-// `reconnect_grace`, иначе служба похоронит сессию, пока мод стоит в паузе.
-const defaultLinkRetry = 5 * time.Second
+// defaultLinkRetry — пауза перед новым соединением со службой. Перезапуск службы занимает около
+// секунды, и возврат обязан успеть в отсрочку `reconnect_grace`; попытка — один вызов местного
+// сокета, поэтому секундная пауза ничего не стоит и тогда, когда службы нет часами.
+const defaultLinkRetry = time.Second
+
+// defaultLinkAbsent — сколько службы может не быть молча: штатный перезапуск укладывается в него
+// с запасом, а дольше владелец узнаёт, что канала пока нет. Вдвое меньше `reconnect_grace` по
+// умолчанию — владелец слышит о пропаже раньше, чем служба похоронит сессию.
+const defaultLinkAbsent = 30 * time.Second
 
 // linkStopFarewell — срок `bye` на остановке подкоманды: кадр идёт по местному сокету, а клиент,
 // погасивший процесс, ждать его выхода долго не станет.
@@ -43,10 +49,12 @@ func newLink(vip *viper.Viper) *cobra.Command {
 	cmd.Flags().String("session", "", "id сессии, как клиент кладёт его в свой вход")
 	cmd.Flags().String("client", string(protocol.ClientClaudeCode), "клиент сессии: "+clientNames())
 	cmd.Flags().Duration("retry", defaultLinkRetry, "пауза перед новым соединением со службой")
+	cmd.Flags().Duration("absent", defaultLinkAbsent, "сколько службы может не быть, пока владельцу не сказано")
 
 	_ = vip.BindPFlag("session", cmd.Flags().Lookup("session"))
 	_ = vip.BindPFlag("client", cmd.Flags().Lookup("client"))
 	_ = vip.BindPFlag("retry", cmd.Flags().Lookup("retry"))
+	_ = vip.BindPFlag("absent", cmd.Flags().Lookup("absent"))
 
 	return cmd
 }
@@ -77,6 +85,7 @@ func runLink(ctx context.Context, vip *viper.Viper) error {
 		Client:       protocol.Client(vip.GetString("client")),
 		Kind:         kind,
 		Retry:        vip.GetDuration("retry"),
+		Absent:       vip.GetDuration("absent"),
 		StopFarewell: linkStopFarewell,
 		Events:       os.Stdout,
 		Log:          os.Stderr,
