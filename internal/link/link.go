@@ -82,6 +82,9 @@ type Link struct {
 	pending *handoff
 	after   string
 	front   string
+	// frontURL и frontToken — вход на loopback и его токен; пусты, где такого входа нет.
+	frontURL   string
+	frontToken string
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -111,20 +114,17 @@ type Link struct {
 // Run держит соединение сессии, пока жив ctx или пока средство сессии не сказало `bye`. Конец ctx —
 // остановка подкоманды извне: что она значит для сессии, решает `stopped`.
 func (l *Link) Run(ctx context.Context) error {
-	listener, cleanup, err := endpoint.Front(ctx)
+	fronts, err := endpoint.Front(ctx)
 	if err != nil {
 		return err //nolint:wrapcheck // причина названа адресом и площадкой внутри endpoint
 	}
 
-	defer func() {
-		_ = listener.Close()
+	defer fronts.Close()
 
-		cleanup()
-	}()
-
-	l.setFront(listener.Addr().String())
-
-	go func() { _ = http.Serve(listener, front{link: l}) }()
+	err = l.serveFronts(fronts)
+	if err != nil {
+		return err
+	}
 
 	// Соединение живёт своим ctx, а не ctx остановки: остановка у клиента, чей процесс и есть
 	// сессия, сначала говорит службе `bye` по ещё открытому соединению и только потом его гасит.
@@ -322,8 +322,10 @@ func (l *Link) attach(ctx context.Context) error {
 
 	defer l.release()
 
+	url, token := l.Loopback()
+
 	l.emit(Event{ //nolint:exhaustruct // поля события задаёт его вид
-		Event: EventReady, Socket: l.Front(), Mode: resp.Mode,
+		Event: EventReady, Socket: l.Front(), URL: url, Token: token, Mode: resp.Mode,
 		TopicID: resp.TopicID, TopicName: resp.TopicName, Revived: resp.Revived,
 	})
 
@@ -653,12 +655,54 @@ func (l *Link) breakOff(taken *handoff, failure error) {
 	taken.once.Do(func() { close(taken.done) })
 }
 
-// setFront запоминает адрес местного входа.
-func (l *Link) setFront(socket string) {
+// serveFronts запоминает адреса местных входов и начинает их слушать. Вход площадки токена не
+// требует: сокет и канал закрыты правами до владельца. Вход на loopback открыт всякому процессу
+// машины, поэтому принимает запрос только с токеном этого запуска.
+func (l *Link) serveFronts(fronts endpoint.Fronts) error {
+	handler := front{link: l}
+
+	address, token := "", ""
+
+	if fronts.Loopback != nil {
+		var err error
+
+		token, err = newToken()
+		if err != nil {
+			return err
+		}
+
+		address = "http://" + fronts.Loopback.Addr().String()
+	}
+
+	l.setFront(fronts.Local.Addr().String(), address, token)
+
+	go func() { _ = http.Serve(fronts.Local, handler) }()
+
+	if fronts.Loopback != nil {
+		go func() { _ = http.Serve(fronts.Loopback, guard(token, handler)) }()
+	}
+
+	return nil
+}
+
+// setFront запоминает адреса местных входов: адрес площадки и, на Windows, вход на loopback с его
+// токеном.
+func (l *Link) setFront(socket, address, token string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.front = socket
+	l.frontURL = address
+	l.frontToken = token
+}
+
+// Loopback отдаёт вход на loopback и его токен. Пусто на площадках, где такого входа нет, и пока
+// вход не поднят.
+func (l *Link) Loopback() (string, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.frontURL, l.frontToken
 }
 
 // halt отмечает, что подкоманда кончилась по слову средства сессии.
@@ -739,24 +783,26 @@ func (l *Link) note(text string) {
 // New собирает соединение сессии по настройкам.
 func New(opts Options) *Link {
 	return &Link{
-		opts:      opts,
-		out:       sync.Mutex{},
-		mu:        sync.Mutex{},
-		client:    nil,
-		pending:   nil,
-		after:     "",
-		front:     "",
-		backlog:   nil,
-		seq:       0,
-		flushing:  false,
-		kick:      make(chan struct{}, 1),
-		upAt:      time.Time{},
-		stop:      make(chan struct{}),
-		stopOnce:  sync.Once{},
-		leaving:   make(chan struct{}),
-		leaveOnce: sync.Once{},
-		lostAt:    time.Time{},
-		absent:    false,
+		opts:       opts,
+		out:        sync.Mutex{},
+		mu:         sync.Mutex{},
+		client:     nil,
+		pending:    nil,
+		after:      "",
+		front:      "",
+		frontURL:   "",
+		frontToken: "",
+		backlog:    nil,
+		seq:        0,
+		flushing:   false,
+		kick:       make(chan struct{}, 1),
+		upAt:       time.Time{},
+		stop:       make(chan struct{}),
+		stopOnce:   sync.Once{},
+		leaving:    make(chan struct{}),
+		leaveOnce:  sync.Once{},
+		lostAt:     time.Time{},
+		absent:     false,
 	}
 }
 

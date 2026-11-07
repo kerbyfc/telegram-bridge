@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 )
@@ -30,6 +31,28 @@ var ErrBusy = errors.New("адрес занят живой службой")
 // ErrName — имя канала негодно: путь в ключе `socket_path` значит, что настройки перенесены с
 // macOS без правки, а канал носит имя, а не путь.
 var ErrName = errors.New("имя канала негодно")
+
+// Fronts — местные входы подкоманды `link`. Local — вход площадки: сокет на macOS и Linux,
+// именованный канал на Windows. Loopback — HTTP-вход на `127.0.0.1` со свободным портом, только на
+// Windows: хозяин модуля хуков Claude Code считает путь `\\.\pipe\…` сетевым и в канал не ходит.
+// На прочих площадках Loopback пуст.
+type Fronts struct {
+	Local    net.Listener
+	Loopback net.Listener
+
+	cleanup func()
+}
+
+// Close закрывает оба входа и убирает за собой.
+func (f Fronts) Close() {
+	_ = f.Local.Close()
+
+	if f.Loopback != nil {
+		_ = f.Loopback.Close()
+	}
+
+	f.cleanup()
+}
 
 // pipeName собирает полное имя канала из значения ключа `socket_path`: полное имя остаётся собой,
 // короткое получает начало. Путь — отказ: на Windows этот ключ значит имя канала, и принятый за

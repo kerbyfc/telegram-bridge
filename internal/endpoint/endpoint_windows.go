@@ -18,6 +18,9 @@ import (
 // живут в общем пространстве имён машины, и два мода одной сессии не должны делить один вход.
 const frontPrefix = "dm-telegram-link-"
 
+// loopbackAddress — адрес входа на loopback: только `127.0.0.1`, порт выбирает система.
+const loopbackAddress = "127.0.0.1:0"
+
 // Default — адрес границы по умолчанию: имя канала, выведенное из корня состояния.
 func Default(stateRoot string) string {
 	return defaultPipeName(stateRoot)
@@ -81,20 +84,32 @@ func Dial(ctx context.Context, address string) (net.Conn, error) {
 	return conn, nil
 }
 
-// Front поднимает местный вход подкоманды `link`: канал со своим именем на один запуск. Канал
-// живёт, пока живёт слушатель, поэтому убирать за собой нечего.
-func Front(ctx context.Context) (net.Listener, func(), error) {
+// Front поднимает местные входы подкоманды `link`: канал со своим именем на один запуск и HTTP-вход
+// на `127.0.0.1` со свободным портом. Канал читает плагин OpenCode, вход на loopback — мод
+// Claude Code, чей хозяин путь канала считает сетевым. Не поднялся любой из двух — отказ: подкоманда
+// без входа своего средства сессии не работает. Каналы и порты живут, пока живут слушатели,
+// поэтому убирать за собой нечего.
+func Front(ctx context.Context) (Fronts, error) {
 	token, err := randomToken()
 	if err != nil {
-		return nil, nil, err
+		return Fronts{}, err //nolint:exhaustruct // при отказе входов нет
 	}
 
-	listener, err := Listen(ctx, frontPrefix+token)
+	local, err := Listen(ctx, frontPrefix+token)
 	if err != nil {
-		return nil, nil, fmt.Errorf("местный вход не поднят: %w", err)
+		return Fronts{}, fmt.Errorf("местный вход не поднят: %w", err) //nolint:exhaustruct // при отказе входов нет
 	}
 
-	return listener, func() {}, nil
+	cfg := net.ListenConfig{} //nolint:exhaustruct // слушателю loopback хватает значений по умолчанию
+
+	loopback, err := cfg.Listen(ctx, "tcp", loopbackAddress)
+	if err != nil {
+		_ = local.Close()
+
+		return Fronts{}, fmt.Errorf("местный вход на loopback не поднят: %w", err) //nolint:exhaustruct // при отказе входов нет
+	}
+
+	return Fronts{Local: local, Loopback: loopback, cleanup: func() {}}, nil
 }
 
 // listenFailure отличает занятый канал от прочих отказов создания. go-winio v0.6.2 создаёт первый

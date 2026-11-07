@@ -76,11 +76,11 @@ func Dial(ctx context.Context, address string) (net.Conn, error) {
 
 // Front поднимает местный вход подкоманды `link`: свой каталог на один запуск и сокет в нём.
 // Каталог заводится заново каждым запуском, поэтому занятого сокета и остатков прежнего тут не
-// бывает. Вторая половина ответа — уборка за собой.
-func Front(ctx context.Context) (net.Listener, func(), error) {
+// бывает. Входа на loopback здесь нет: сокет доступен обоим средствам сессии.
+func Front(ctx context.Context) (Fronts, error) {
 	dir, err := os.MkdirTemp("", "dmtg-")
 	if err != nil {
-		return nil, nil, fmt.Errorf("каталог местного входа не создан: %w", err)
+		return Fronts{}, fmt.Errorf("каталог местного входа не создан: %w", err) //nolint:exhaustruct // при отказе входов нет
 	}
 
 	cleanup := func() { _ = os.RemoveAll(dir) }
@@ -89,7 +89,7 @@ func Front(ctx context.Context) (net.Listener, func(), error) {
 	if err != nil {
 		cleanup()
 
-		return nil, nil, fmt.Errorf("права каталога местного входа не выставлены: %w", err)
+		return Fronts{}, fmt.Errorf("права каталога местного входа не выставлены: %w", err) //nolint:exhaustruct // при отказе входов нет
 	}
 
 	cfg := net.ListenConfig{} //nolint:exhaustruct // слушателю местного входа хватает значений по умолчанию
@@ -98,10 +98,10 @@ func Front(ctx context.Context) (net.Listener, func(), error) {
 	if err != nil {
 		cleanup()
 
-		return nil, nil, fmt.Errorf("местный вход не поднят: %w", err)
+		return Fronts{}, fmt.Errorf("местный вход не поднят: %w", err) //nolint:exhaustruct // при отказе входов нет
 	}
 
-	return listener, cleanup, nil
+	return Fronts{Local: listener, Loopback: nil, cleanup: cleanup}, nil
 }
 
 // clearStale убирает сокет, оставшийся от прежнего запуска: живой слушатель отвечает на

@@ -85,9 +85,48 @@ func TestChatNameRenamesBoundTopic(t *testing.T) {
 	}
 }
 
-// TestManualNameBeatsChatName: имя, заданное аргументом, старше названия чата и переименованиями
-// чата не меняется. Включение режима без аргумента ручного имени тоже не отменяет.
-func TestManualNameBeatsChatName(t *testing.T) {
+// TestAwayNameBecomesChatName: имя, названное аргументом `/away`, становится названием чата у
+// службы: тема получает его, оно запоминается, и включение без аргумента берёт его же.
+func TestAwayNameBecomesChatName(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+
+	conn, resp := rig.hello("s1", protocol.RoleSession, protocol.KindMod)
+	if !resp.OK {
+		t.Fatalf("hello мода отказал: %+v", resp.Error)
+	}
+
+	report := rig.req(protocol.OpNameReport)
+	report.Name = chat
+	rig.do(conn, report)
+	rig.do(conn, rig.req(protocol.OpModeOn))
+
+	on := rig.req(protocol.OpModeOn)
+	on.Name = topicAlpha
+
+	named := rig.do(conn, on)
+	if !named.OK || named.TopicName != topicAlpha {
+		t.Fatalf("аргумент `/away` не дал теме имени: %+v", named)
+	}
+
+	if names := rig.api.renamedNames(); len(names) != 1 || names[0] != topicAlpha {
+		t.Fatalf("тема не переименована аргументом: %v", names)
+	}
+
+	if got := rig.sessionRecord("s1").AutoName; got != topicAlpha {
+		t.Fatalf("аргумент не запомнен названием чата: %q", got)
+	}
+
+	again := rig.do(conn, rig.req(protocol.OpModeOn))
+	if again.TopicID != named.TopicID || again.TopicName != topicAlpha {
+		t.Fatalf("включение без аргумента не взяло названное имя: %+v", again)
+	}
+}
+
+// TestChatNameRenamesAfterAwayName: аргумент `/away` не главнее названия чата — следующее название
+// от средства сессии переименовывает тему так же, как без аргумента.
+func TestChatNameRenamesAfterAwayName(t *testing.T) {
 	t.Parallel()
 
 	rig := newRig(t)
@@ -97,13 +136,32 @@ func TestManualNameBeatsChatName(t *testing.T) {
 	report.Name = topicBeta
 	rig.do(conn, report)
 
-	if names := rig.api.renamedNames(); len(names) != 0 {
-		t.Fatalf("ручное имя переименовано за чатом: %v", names)
+	if names := rig.api.renamedNames(); len(names) != 1 || names[0] != topicBeta {
+		t.Fatalf("тема после аргумента не пошла за чатом: %v", names)
 	}
 
-	again := rig.do(conn, rig.req(protocol.OpModeOn))
-	if again.TopicID != on.TopicID || again.TopicName != topicAlpha {
-		t.Fatalf("включение без аргумента не удержало ручное имя: %+v", again)
+	status := rig.do(conn, rig.req(protocol.OpModeStatus))
+	if status.TopicID != on.TopicID || status.TopicName != topicBeta {
+		t.Fatalf("привязка не знает нового имени: %+v", status)
+	}
+}
+
+// TestTopicAwayNameBecomesChatName: аргумент `/away` из темы — то же, что аргумент из сессии:
+// тема переименовывается, и имя запоминается названием чата.
+func TestTopicAwayNameBecomesChatName(t *testing.T) {
+	t.Parallel()
+
+	rig := newRig(t)
+	_, on := rig.mod("s1", topicAlpha)
+
+	rig.ownerMessage(on.TopicID, "/away "+topicBeta)
+
+	if names := rig.api.renamedNames(); len(names) != 1 || names[0] != topicBeta {
+		t.Fatalf("тема не переименована аргументом из темы: %v", names)
+	}
+
+	if got := rig.sessionRecord("s1").AutoName; got != topicBeta {
+		t.Fatalf("аргумент из темы не запомнен названием чата: %q", got)
 	}
 }
 
@@ -247,13 +305,17 @@ func TestChatNameFromToolRefused(t *testing.T) {
 	}
 }
 
-// TestChatNameSurvivesRestart: название чата и признак ручного имени живут в привязке сессии, а не
-// в памяти процесса: перезапуск службы не делает ручное имя именем чата.
+// TestChatNameSurvivesRestart: название чата живёт в привязке сессии, а не в памяти процесса:
+// после перезапуска службы включение без аргумента берёт его же и тему не переименовывает.
 func TestChatNameSurvivesRestart(t *testing.T) {
 	t.Parallel()
 
 	rig := newRig(t)
-	conn, _ := rig.mod("s1", topicAlpha)
+
+	conn, resp := rig.hello("s1", protocol.RoleSession, protocol.KindMod)
+	if !resp.OK {
+		t.Fatalf("hello мода отказал: %+v", resp.Error)
+	}
 
 	report := rig.req(protocol.OpNameReport)
 	report.Name = topicBeta
@@ -261,9 +323,13 @@ func TestChatNameSurvivesRestart(t *testing.T) {
 
 	rig.reopen()
 
+	if got := rig.sessionRecord("s1").AutoName; got != topicBeta {
+		t.Fatalf("после перезапуска название чата потеряно: %q", got)
+	}
+
 	again := rig.do(conn, rig.req(protocol.OpModeOn))
-	if again.TopicName != topicAlpha {
-		t.Fatalf("после перезапуска ручное имя заменилось названием чата: %+v", again)
+	if again.TopicName != topicBeta {
+		t.Fatalf("после перезапуска включение не взяло название чата: %+v", again)
 	}
 
 	if names := rig.api.renamedNames(); len(names) != 0 {
