@@ -42,7 +42,12 @@ type Event struct {
 
 	// Socket — адрес местного входа подкоманды: путь сокета на macOS, имя канала на Windows. Имя
 	// поля то же, что было у мода и плагина: смысл не изменился, адрес площадки называет событие.
-	Socket    string        `json:"socket,omitempty"`
+	Socket string `json:"socket,omitempty"`
+	// URL и Token — вход на loopback, только на Windows: `http://127.0.0.1:<порт>` и токен этого
+	// запуска, который запрос несёт заголовком `Authorization: Bearer <token>`. На прочих
+	// площадках оба пусты и в событие не идут.
+	URL       string        `json:"url,omitempty"`
+	Token     string        `json:"token,omitempty"`
 	Mode      protocol.Mode `json:"mode,omitempty"`
 	TopicID   int64         `json:"topic_id,omitempty"`
 	TopicName string        `json:"topic_name,omitempty"`

@@ -35,9 +35,11 @@ travel only through its connection.
   topic.
 - **Topic.** The name is the argument, otherwise the chat's own name as the session adapter reports
   it, otherwise the topic already bound to the session, otherwise `default_topic_name` from the
-  settings. The chat's name is followed: a renamed chat renames its bound topic — while the mode is on
-  and after `/here` too — by the same rules as any other name. A name you type, in the terminal or in
-  the topic, is yours: chat renames never change it. A chat without a name falls back to the bound
+  settings. The topic always carries the chat's name: a renamed chat renames its bound topic — while
+  the mode is on and after `/here` too — by the same rules as any other name. A name you type with
+  `/away`, in the terminal or in the topic, becomes the chat's name for the service: the topic gets it,
+  `/away` without an argument takes it again, and the next chat name the adapter reports renames the
+  topic as usual — no name outranks the chat. A chat without a name falls back to the bound
   topic and `default_topic_name`. Longer than 128 characters is cut with an ellipsis, the suffix stays
   at the end. A topic and a session are one to one: a name taken by a live session gives the second
   session the lowest free suffix `#2`, `#3` — two chats with the same name get `X` and `X#2`. A deleted
@@ -229,7 +231,16 @@ displacement are the same: the transport is decided by `internal/endpoint`, the 
   restart). Otherwise the installation refuses — "the service did not answer" or "the restart did not
   pick up the new build" — instead of saying "the service is running".
 - **The local entry of the `link` subcommand** on Windows is a pipe too
-  (`\\.\pipe\dm-telegram-link-<16 random chars>`), with its own name per run and the same rights.
+  (`\\.\pipe\dm-telegram-link-<16 random chars>`), with its own name per run and the same rights;
+  the OpenCode plugin uses it. Next to it the subcommand opens an HTTP entry on `127.0.0.1` with a free
+  port, because the Claude Code host treats a `\\.\pipe\…` path as a network location and refuses a
+  `socketPath` request to it. The `ready` event names it with two more fields: `url`
+  (`http://127.0.0.1:<port>`) and `token` (16 random bytes in hex, new per run). The loopback entry
+  takes a request only with `Authorization: Bearer <token>`; without it or with another token it
+  answers `401` with the usual refusal body `{"ok":false,"code":"bad-request","text":…}`. The pipe
+  needs no token: its rights close it to the owner. If the loopback entry does not open, `link` fails
+  instead of running with the pipe alone. On macOS and Linux there is one entry, and `ready` has no
+  `url` or `token`.
 - **The state directory check** on Windows asks the system for its DACL. It is closed when only the
   process owner, SYSTEM and machine administrators have access entries (on Windows that is the same
   as root on macOS: a 0700 permission does not close anything for them) and when CREATOR OWNER and
@@ -415,8 +426,8 @@ adapter.** Both clients call the same local entry of the subcommand: `POST /turn
 `POST /turn/end {turn?}` — turn boundaries with a turn name, by which the service keeps the "typing"
 chat action in the topic, `POST /message {text}` — a finished agent reply that the service sends to the
 topic as one message, `POST /context {percent}` — the share of the context window in use, which the
-service puts into the topic's pinned line, and `POST /name {name}` — the chat's name, which becomes the
-topic's name when you did not give one yourself. Neither the subcommand nor the service keeps its own
+service puts into the topic's pinned line, and `POST /name {name}` — the chat's name, which the bound
+topic always follows. Neither the subcommand nor the service keeps its own
 context count: the number is taken from the client by whoever lives inside the client. The Claude Code
 mod takes it ready-made and names it on every turn boundary; the OpenCode plugin has no ready number
 yet, so no percentage comes from there and such a session's pinned line carries the topic name alone.

@@ -1,9 +1,14 @@
 package link
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/kerbyfc/telegram-bridge/internal/protocol"
 )
@@ -27,15 +32,56 @@ const (
 	// PathMessage — дописанная реплика агента: служба отправляет её в тему одним сообщением.
 	PathMessage = "/message"
 	// PathName — имя, которое средство сессии называет службе: название чата. Служба не знает,
-	// что это чат, и держит у себя только признак «имя задано вручную».
+	// что это чат, и привязанная тема всегда идёт за этим именем.
 	PathName = "/name"
 )
 
+// tokenBytes — сколько случайных байт в токене входа на loopback: 128 бит не угадываются.
+const tokenBytes = 16
+
+// bearer — начало значения заголовка `Authorization` входа на loopback.
+const bearer = "Bearer "
+
 // front — местный вход подкоманды: HTTP поверх своего адреса — сокета на macOS и именованного
-// канала на Windows. Выбран он потому, что модуль хуков клиента живёт без сокетов и без своего
-// процесса: наружу он ходит либо запросом через хозяина (`$.http.fetch`), либо запуском команды.
+// канала на Windows, а на Windows ещё и поверх `127.0.0.1`. Выбран он потому, что модуль хуков
+// клиента живёт без сокетов и без своего процесса: наружу он ходит либо запросом через хозяина
+// (`$.http.fetch`), либо запуском команды.
 type front struct {
 	link *Link
+}
+
+// guard пускает к входу только запрос с токеном этого запуска в заголовке
+// `Authorization: Bearer <token>`. Вход на loopback открыт всякому процессу машины, и границу
+// владельца здесь держит токен, а не права адреса. Сравнение — за постоянное время: по времени
+// отказа токен не подбирается.
+func guard(token string, next http.Handler) http.Handler {
+	if token == "" {
+		panic("вход на loopback без токена")
+	}
+
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		given, found := strings.CutPrefix(request.Header.Get("Authorization"), bearer)
+		if !found || subtle.ConstantTimeCompare([]byte(given), []byte(token)) != 1 {
+			front{link: nil}.refuse(writer, http.StatusUnauthorized, protocol.CodeBadRequest,
+				"вход на loopback требует `Authorization: Bearer <token>` из события `ready`")
+
+			return
+		}
+
+		next.ServeHTTP(writer, request)
+	})
+}
+
+// newToken — токен входа на loopback: свой у каждого запуска подкоманды.
+func newToken() (string, error) {
+	buffer := make([]byte, tokenBytes)
+
+	_, err := rand.Read(buffer)
+	if err != nil {
+		return "", fmt.Errorf("токен входа на loopback не собран: %w", err)
+	}
+
+	return hex.EncodeToString(buffer), nil
 }
 
 // ServeHTTP разводит короткий запрос средства сессии по операции.

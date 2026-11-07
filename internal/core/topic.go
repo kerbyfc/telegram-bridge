@@ -62,12 +62,9 @@ func (c *Core) enableMode(ctx context.Context, sess *Session, requested string) 
 	// Имя режется по пределу платформы здесь, на входе в реестр: реестр держит ровно то имя, что
 	// держит Telegram, и закреплённая строка, собранная из него, за предел сообщения не уходит.
 	name := botapi.TopicName(pickName(requested, sess.disk.AutoName, sess.disk.TopicName,
-		c.cfg.DefaultTopicName, sess.disk.NameManual), "")
+		c.cfg.DefaultTopicName), "")
 	bound := sess.disk.TopicID != 0
 	oldName := sess.disk.TopicName
-	// Имя, названное владельцем аргументом, старше имени чата и остаётся таким до следующего
-	// слова владельца. Включение без аргумента ручного имени не отменяет.
-	manual := sess.disk.NameManual || requested != ""
 
 	c.mu.Unlock()
 
@@ -89,7 +86,12 @@ func (c *Core) enableMode(ctx context.Context, sess *Session, requested string) 
 
 	sess.disk.Mode = true
 	sess.disk.ModeOnReturn = false
-	sess.disk.NameManual = manual
+	// Имя, названное аргументом, — это и есть название чата у службы: тема всегда носит название
+	// чата, и следующее название, пришедшее от средства сессии, переименует её так же.
+	if requested != "" {
+		sess.disk.AutoName = requested
+	}
+
 	topicID := sess.disk.TopicID
 	topicName := sess.disk.TopicName
 	c.mustSave(sess.disk.Save(c.store))
@@ -107,8 +109,7 @@ func (c *Core) enableMode(ctx context.Context, sess *Session, requested string) 
 }
 
 // nameReport принимает имя, названное средством сессии: название чата. Служба не знает, что это
-// чат, — ему передают обычное имя, — и решает по признаку у себя: имя, заданное владельцем
-// вручную, старше, а без ручного имени тема следует за названным.
+// чат, — ей передают обычное имя, — и привязанная тема всегда следует за названным.
 func (c *Core) nameReport(ctx context.Context, conn *Conn, req protocol.Request) protocol.Response {
 	c.mu.Lock()
 	sess := c.session(sessionOf(conn, req))
@@ -126,9 +127,9 @@ func (c *Core) nameReport(ctx context.Context, conn *Conn, req protocol.Request)
 	return protocol.Ok(req.RID)
 }
 
-// followName запоминает название чата и переименовывает привязанную тему, если имя не задано
-// вручную. Переименование идёт тем же путём, что и слово владельца: занятое имя получает номерной
-// суффикс, то же имя не переименовывается, а пропавшая тема заводится заново.
+// followName запоминает название чата и переименовывает привязанную тему. Переименование идёт тем
+// же путём, что и слово владельца: занятое имя получает номерной суффикс, то же имя не
+// переименовывается, а пропавшая тема заводится заново.
 //
 // Имя снимается пустым: у чата названия нет, и тема остаётся при прежнем имени — так же, как
 // `mode.on` без аргумента берёт привязку сессии.
@@ -139,7 +140,6 @@ func (c *Core) followName(ctx context.Context, sess *Session, name string) error
 	c.mu.Lock()
 
 	sess.disk.AutoName = name
-	manual := sess.disk.NameManual
 	// Закрытую тему название чата не правит: оно запомнено, и с ним сессия вернётся.
 	bound := sess.disk.TopicID != 0 && !c.topics.IsClosed(sess.disk.TopicID)
 	oldName := sess.disk.TopicName
@@ -147,7 +147,7 @@ func (c *Core) followName(ctx context.Context, sess *Session, name string) error
 	c.mustSave(sess.disk.Save(c.store))
 	c.mu.Unlock()
 
-	if manual || !bound || name == "" {
+	if !bound || name == "" {
 		return nil
 	}
 
@@ -420,9 +420,7 @@ func (c *Core) releaseTopic(topicID int64) {
 	sess.disk.TopicName = ""
 	sess.disk.Mode = false
 	sess.disk.ModeOnReturn = false
-	// Ручное имя жило в имени темы: темы у сессии больше нет, и имени, которое надо было бы
-	// помнить, тоже. Название чата — факт о сессии, а не о теме, и остаётся.
-	sess.disk.NameManual = false
+	// Название чата — факт о сессии, а не о теме, и остаётся.
 	c.mustSave(sess.disk.Save(c.store))
 }
 
@@ -696,14 +694,13 @@ func (c *Core) sendChunks(ctx context.Context, sess *Session, text string) ([]in
 
 // pickName берёт имя темы из аргумента, иначе из названия чата, иначе из привязки сессии, иначе из
 // настройки. Имя не выводится из имени каталога дерева и не спрашивается у системы контроля
-// версий. Название чата старше привязки, но младше слова владельца: заданное вручную имя
-// переименования чата не меняют.
-func pickName(requested, auto, bound, fallback string, manual bool) string {
+// версий. Аргумент становится названием чата, поэтому старше его здесь ничего нет.
+func pickName(requested, auto, bound, fallback string) string {
 	if requested != "" {
 		return requested
 	}
 
-	if !manual && auto != "" {
+	if auto != "" {
 		return auto
 	}
 
