@@ -2,7 +2,6 @@ package cli //nolint:testpackage // сверка значков неэкспор
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -123,30 +122,40 @@ func TestIconsCheckNetworkIsNotBadValue(t *testing.T) {
 	}
 }
 
-// TestIconsAtStart: значок вне набора не даёт службе подняться тем же кодом, что негодные настройки;
-// недоступность Telegram поднимается и оставляет строку журнала.
+// TestIconsAtStart: ни значок вне набора, ни недоступность Telegram не мешают службе подняться —
+// адрес к этому времени уже поднят, — а исход сверки ложится строкой журнала своим событием.
 func TestIconsAtStart(t *testing.T) {
 	t.Parallel()
 
 	client, cfg := iconsStand(t, "🦄", "💻", iconsSet)
+	jrnl := journal(t)
 
-	var exit exitError
+	err := checkIconsAtStart(context.Background(), client, cfg, jrnl)
+	if err != nil {
+		t.Fatalf("значок вне набора не дал службе подняться: %v", err)
+	}
 
-	err := checkIconsAtStart(context.Background(), client, cfg, journal(t))
-	if !errors.As(err, &exit) || exit.code != ExitUsage || !strings.Contains(exit.msg, config.TopicIconOnKey) {
-		t.Fatalf("служба поднимается со значком вне набора: %v", err)
+	entries, err := store.TailJournal(jrnl.Path(), 1)
+	if err != nil || len(entries) != 1 || entries[0].Event != iconsOutsideSetEvent {
+		t.Fatalf("журнал: %+v, %v", entries, err)
+	}
+
+	for _, want := range []string{config.TopicIconOnKey, "🦄"} {
+		if !strings.Contains(entries[0].Text, want) {
+			t.Fatalf("в строке журнала нет %q: %s", want, entries[0].Text)
+		}
 	}
 
 	client, cfg = deadStand(t)
-	jrnl := journal(t)
+	jrnl = journal(t)
 
 	err = checkIconsAtStart(context.Background(), client, cfg, jrnl)
 	if err != nil {
 		t.Fatalf("недоступность Telegram не подняла службу: %v", err)
 	}
 
-	entries, err := store.TailJournal(jrnl.Path(), 1)
-	if err != nil || len(entries) != 1 || entries[0].Event != "topic-icons-unverified" {
+	entries, err = store.TailJournal(jrnl.Path(), 1)
+	if err != nil || len(entries) != 1 || entries[0].Event != iconsUnverifiedEvent {
 		t.Fatalf("журнал: %+v, %v", entries, err)
 	}
 }
