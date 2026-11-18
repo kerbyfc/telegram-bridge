@@ -108,11 +108,6 @@ func serve(ctx context.Context, vip *viper.Viper, service bool) error {
 
 	defer func() { _ = jrnl.Close() }()
 
-	err = checkIconsAtStart(ctx, client, cfg, jrnl)
-	if err != nil {
-		return err
-	}
-
 	engine, err := core.New(cfg, client, st, jrnl)
 	if err != nil {
 		return exitError{ExitFailed, err.Error()}
@@ -122,9 +117,20 @@ func serve(ctx context.Context, vip *viper.Viper, service bool) error {
 	// нём строку.
 	defer engine.Close()
 
+	// Адрес поднимается до сверки значков: сверка спрашивает набор у Bot API, и на медленной сети
+	// она держала бы перезапуск секундами, пока клиенты не находят сокета. Для подъёма службы исход
+	// сверки ничего не решает — он ложится строкой журнала, — поэтому поднятый адрес переживает её
+	// отказ, а не уходит вместе с ним.
 	srv, err := server.Listen(ctx, cfg.Endpoint(), engine)
 	if err != nil {
 		return exitError{ExitFailed, err.Error()}
+	}
+
+	err = checkIconsAtStart(ctx, client, cfg, jrnl)
+	if err != nil {
+		srv.Close()
+
+		return err
 	}
 
 	return hold(ctx, engine, srv)

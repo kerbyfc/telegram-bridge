@@ -15,8 +15,16 @@ import (
 // iconsCheckName — имя проверки значков в самопроверке.
 const iconsCheckName = "значки тем"
 
-// iconsCheckTimeout — срок сверки значков с набором Telegram. Сверка стоит перед подъёмом службы и
-// в разовых командах, а мёртвая сеть не повод держать их до конца всех повторов.
+// События журнала о сверке значков при запуске службы: «набор не получен» и «значка нет в наборе» —
+// разные вещи, и по журналу они читаются порознь.
+const (
+	iconsUnverifiedEvent = "topic-icons-unverified"
+	iconsOutsideSetEvent = "topic-icons-outside-set"
+)
+
+// iconsCheckTimeout — срок сверки значков с набором Telegram. Сверка идёт при запуске службы и в
+// разовых командах, а мёртвая сеть не повод держать её до конца всех повторов: у запуска этот срок —
+// ещё и предел, на который сверка откладывает приём соединений.
 const iconsCheckTimeout = 5 * time.Second
 
 // iconsCheck сверяет значки из настроек с закрытым набором Telegram. Значка нет в наборе — отказ с
@@ -81,9 +89,12 @@ func verifyIcons(ctx context.Context) func(*config.Config) (string, error) {
 	}
 }
 
-// checkIconsAtStart сверяет значки перед подъёмом службы. Значка нет в наборе — служба не поднимается,
-// как при всяких негодных настройках. Набор не получен — служба поднимается: недоступность Telegram
-// не делает значение негодным, а отказ у самого значка скажет журнал на первом переключении.
+// checkIconsAtStart сверяет значки при запуске службы, и подъёма службы эта сверка не решает: адрес
+// к этому времени уже поднят, а набор значков спрашивается сетью. Всё, кроме подтверждённой сверки,
+// ложится строкой журнала: недоступность Telegram не делает значение негодным, а значок вне набора
+// служба всё равно не поставит — отказ у самого значка скажет журнал на первом переключении. Отказом
+// сверка отвечает только тогда, когда строку не принял журнал: служба без журнала не работает, и это
+// отказ не значка, а состояния.
 func checkIconsAtStart(ctx context.Context, client *botapi.Client, cfg *config.Config, jrnl *store.Journal) error {
 	verdict := iconsCheck(ctx, client, cfg)
 
@@ -91,18 +102,23 @@ func checkIconsAtStart(ctx context.Context, client *botapi.Client, cfg *config.C
 	case stateOK:
 		return nil
 	case stateFailed:
-		return exitError{ExitUsage, verdict.Detail}
+		return writeIconsEntry(jrnl, iconsOutsideSetEvent, verdict.Detail)
 	case stateUnknown:
-		err := jrnl.Write(store.Entry{
-			At: time.Now(), Event: "topic-icons-unverified", Session: "", Outcome: "",
-			Code: "", Text: verdict.Detail, TopicID: 0,
-		})
-		if err != nil {
-			return exitError{ExitFailed, err.Error()}
-		}
-
-		return nil
+		return writeIconsEntry(jrnl, iconsUnverifiedEvent, verdict.Detail)
 	default:
 		panic("исход сверки значков неизвестен: " + string(verdict.State))
 	}
+}
+
+// writeIconsEntry кладёт исход сверки в журнал службы.
+func writeIconsEntry(jrnl *store.Journal, event, text string) error {
+	err := jrnl.Write(store.Entry{
+		At: time.Now(), Event: event, Session: "", Outcome: "",
+		Code: "", Text: text, TopicID: 0,
+	})
+	if err != nil {
+		return exitError{ExitFailed, err.Error()}
+	}
+
+	return nil
 }
